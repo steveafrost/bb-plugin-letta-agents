@@ -14,23 +14,43 @@ type TaskAgent = { id: string; providerId: string; providerIds?: string[] };
 export function agentTasks<T extends TaskThread>(agents: readonly TaskAgent[], threads: readonly T[]): Map<string, T[]> {
   const byId = new Map(threads.map(thread => [thread.id, thread]));
   const result = new Map(agents.map(agent => [agent.id, [] as T[]]));
+  const byProvider = new Map<string, string>();
+  for (const agent of agents) {
+    for (const provider of [agent.providerId, ...(agent.providerIds ?? [])]) {
+      // Preserve roster-order precedence for overlapping aliases.
+      if (!byProvider.has(provider)) byProvider.set(provider, agent.id);
+    }
+  }
+  const parentId = (thread: T) => thread.lifecycleOwnerThreadId ?? (thread.originKind !== "fork" ? thread.parentThreadId : null);
+  type Owner = { agentId: string; threadId: string } | null;
+  const memo = new Map<string, Owner>();
+  // Inclusive nearest owner, memoized iteratively to avoid deep-chain stack growth.
+  const ownerOf = (id: string): Owner => {
+    const path: string[] = [];
+    const seen = new Set<string>();
+    let current: string | null = id;
+    let owner: Owner = null;
+    while (current !== null) {
+      if (memo.has(current)) { owner = memo.get(current)!; break; }
+      if (seen.has(current)) break;
+      const row = byId.get(current);
+      if (!row) break;
+      seen.add(current);
+      path.push(current);
+      const agentId = byProvider.get(row.providerId);
+      if (agentId !== undefined) { owner = { agentId, threadId: row.id }; break; }
+      current = parentId(row);
+    }
+    for (const visited of path) memo.set(visited, owner);
+    return owner;
+  };
   for (const thread of threads) {
     if (thread.isArchived) continue;
-    const seen = new Set([thread.id]);
-    let current = thread;
-    while (true) {
-      const parentId = current.lifecycleOwnerThreadId ?? (current.originKind !== "fork" ? current.parentThreadId : null);
-      if (!parentId || seen.has(parentId)) break;
-      seen.add(parentId);
-      const parent = byId.get(parentId);
-      if (!parent) break;
-      const agent = agents.find(agent => parent.providerId === agent.providerId || agent.providerIds?.includes(parent.providerId));
-      if (agent) {
-        result.get(agent.id)!.push(thread);
-        break;
-      }
-      current = parent;
-    }
+    const parent = parentId(thread);
+    if (parent === null) continue;
+    const owner = ownerOf(parent);
+    // A traversal returning to its candidate must stop before counting itself.
+    if (owner && owner.threadId !== thread.id) result.get(owner.agentId)!.push(thread);
   }
   return result;
 }

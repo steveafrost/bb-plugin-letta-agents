@@ -33,6 +33,8 @@ export default async function plugin(bb: BbPluginApi) {
   let warning: string | null = null;
   let ready = false;
   const controllers = new Set<AbortController>();
+  // Retain successful creations across transient KV failures (within this runtime).
+  const pendingChats = new Map<string, string>();
   async function docker(args: string[], binary = false): Promise<Buffer> {
     const config = await settings.get();
     const executable = config.dockerExecutable.trim();
@@ -74,20 +76,27 @@ export default async function plugin(bb: BbPluginApi) {
       const ids = identities(agents, current, saved, config.appServerUrl);
       const desired = agents.map(agent => ({ id: ids[agent.id]!, displayName: agent.name, command: "npx", args: ["-y", "@letta-ai/letta-acp@0.1.10"], env: { LETTA_ACP_BACKEND: "remote", LETTA_APP_SERVER_URL: config.appServerUrl, LETTA_AGENT_ID: agent.id, LETTA_APP_SERVER_TOKEN: token, LETTA_ACP_PERMISSION_MODE: config.allowUnrestricted ? "unrestricted" : "standard" } }));
       const owned = new Set(current.filter(entry => entry.id.startsWith("letta-") && entry.env?.LETTA_ACP_BACKEND === "remote" && agents.some(agent => agent.id === entry.env?.LETTA_AGENT_ID)).map(entry => entry.id));
+      // Absent providers remain untouched, including permissions; explicit cleanup
+      // is required for retained unrestricted entries (see README).
       const next = mergeProviders(current, desired, owned);
       if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
       // Re-read immediately before writing. The public API has no CAS; do not
       // overwrite a concurrent adapter edit detected during this synchronization.
       if (JSON.stringify(await adapterEntries()) !== JSON.stringify(current)) throw new Error("ACP settings changed during sync; retry.");
+      if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
       if (JSON.stringify(next) !== JSON.stringify(current)) {
         try { await bb.sdk.plugins.updateSettings({ pluginId: "bb--provider-acp-next", values: { customAgents: JSON.stringify(next) } }); }
         catch { throw new Error("Unable to update ACP settings. Details withheld to protect credentials."); }
       }
       if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
       await bb.storage.kv.set("provider-source:v2", source);
+      if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
       await bb.storage.kv.set("provider-identities:v2", { ...saved, ...ids });
+      if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
       await bb.storage.kv.set("provider-aliases:v2", Object.fromEntries(agents.map(agent => [agent.id, [...new Set([`acp-${ids[agent.id]}`, ...current.filter(entry => entry.id.startsWith("letta-") && entry.env?.LETTA_AGENT_ID === agent.id && entry.env?.LETTA_ACP_BACKEND === "remote").map(entry => `acp-${entry.id}`)])]])));
+      if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
       await bb.storage.kv.set("roster:v2", { source: `${config.dockerExecutable}:${config.container}`, roster });
+      if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
       ready = true; warning = null; lastSync = Date.now();
       bb.log.info(`Synchronized ${agents.length} Letta providers; unrelated ACP entries preserved.`);
       return roster;
@@ -100,7 +109,7 @@ export default async function plugin(bb: BbPluginApi) {
   // Never surface arbitrary SDK/subprocess exception text: it may include settings.
   function safeError(error: unknown): string {
     const message = error instanceof Error ? error.message : "";
-    const safePrefixes = ["Letta container command failed.", "Letta token is empty", "Settings changed;", "ACP settings changed", "Unable to update ACP settings.", "Provider identity collision", "Provider ID belongs", "Refusing to overwrite", "Duplicate agent ID", "Duplicate Letta providers;", "Provider endpoint differs;", "Provider source differs;", "Invalid Letta", "Invalid Docker", "Use a ws://", "Configure a Docker"];
+    const safePrefixes = ["Letta container command failed.", "Letta token is empty", "Settings changed;", "ACP settings changed", "Unable to update ACP settings.", "Provider identity collision", "Provider identity differs;", "Provider ID belongs", "Refusing to overwrite", "Duplicate agent ID", "Duplicate Letta providers;", "Provider endpoint differs;", "Provider source differs;", "Invalid Letta", "Invalid Docker", "Use a ws://", "Configure a Docker"];
     return safePrefixes.some(prefix => message.startsWith(prefix)) ? message : "Letta synchronization failed. Check the ACP adapter, endpoint configuration and roster format. Details withheld.";
   }
   async function roster(): Promise<Roster> {
@@ -109,14 +118,24 @@ export default async function plugin(bb: BbPluginApi) {
     return cached;
   }
   const startChat = singleFlight(async (rawId: string) => {
-    const current = await roster();
+    const epoch = generation;
+    const config = await settings.get();
+    const source = `${config.dockerExecutable}:${config.container}:${config.appServerUrl}`;
+    // Resuming a verified conversation must not depend on Docker/ACP availability.
+    // Cached display data is usable only for its previously synchronized source.
+    let current = await cachedRoster();
+    const savedSource = await bb.storage.kv.get<string>("provider-source:v2");
+    if (!current || savedSource !== source) current = await roster();
+    if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
     const matches = current.agents.filter(agent => agent.id === rawId);
     if (matches.length !== 1) throw new Error("Agent is missing or ambiguous. Refresh the roster.");
     const agent = matches[0]!;
     const ids = await bb.storage.kv.get<Record<string, string>>("provider-identities:v2") ?? {};
-    const providerId = `acp-${ids[agent.id]}`;
+    const identity = Object.hasOwn(ids, agent.id) ? ids[agent.id] : undefined;
+    if (typeof identity !== "string" || !/^letta-[a-zA-Z0-9_-]{1,199}$/.test(identity)) throw new Error("Invalid Letta saved provider identity.");
+    const providerId = `acp-${identity}`;
     const key = `chat-id:${agent.id}`;
-    let existing = await bb.storage.kv.get<string>(key);
+    let existing = pendingChats.get(agent.id) ?? await bb.storage.kv.get<string>(key);
     if (!existing) existing = await bb.storage.kv.get<string>(`chat:${ids[agent.id]}`);
     if (!existing && current.agents.filter(a => slug(a.name) === slug(agent.name)).length === 1) existing = await bb.storage.kv.get<string>(`chat:letta-${slug(agent.name)}`);
     if (existing) {
@@ -126,20 +145,29 @@ export default async function plugin(bb: BbPluginApi) {
       try { thread = await bb.sdk.threads.get({ threadId: existing }); }
       catch { throw new Error("Cannot verify the saved chat. Retry later; no duplicate chat was created."); }
       const aliases = await bb.storage.kv.get<Record<string, string[]>>("provider-aliases:v2") ?? {};
+      const accepted = Object.hasOwn(aliases, agent.id) ? aliases[agent.id] : [providerId];
+      if (!Array.isArray(accepted) || !accepted.includes(thread.providerId)) throw new Error("Saved chat belongs to another provider. No replacement was created.");
+      if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
       if (!thread.archivedAt && !thread.deletedAt) {
-        if (!(aliases[agent.id] ?? [providerId]).includes(thread.providerId)) throw new Error("Saved chat belongs to another provider. No replacement was created.");
-        await bb.storage.kv.set(key, thread.id); return { threadId: thread.id };
+        pendingChats.set(agent.id, thread.id);
+        await bb.storage.kv.set(key, thread.id); pendingChats.delete(agent.id);
+        return { threadId: thread.id };
       }
     }
-    const config = await settings.get();
+    // New/replacement chats still require successful current-generation synchronization.
+    await roster();
+    if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
     if (!config.projectId || !config.hostId || !config.environmentProviderId) throw new Error("Configure chat project ID, host ID and workspace provider ID in Letta Agents settings before starting a chat.");
     const providers = await bb.sdk.providers.list({ hostId: config.hostId });
     if (!providers.some(provider => provider.id === providerId && provider.available)) throw new Error("Letta provider is not available yet. Enable the ACP adapter/provider and retry.");
+    if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
     let thread;
     try {
-      thread = await bb.sdk.threads.spawn({ providerId, permissionMode: config.allowUnrestricted ? "full" : "auto", projectId: config.projectId, title: `${agent.name} (Letta)`, environment: { type: "provider", environmentProviderId: config.environmentProviderId, inputs: {}, machine: { type: "existing", hostId: config.hostId } }, prompt: `Say hello and briefly remind me what you (${agent.name}) do.` });
+      thread = await bb.sdk.threads.spawn({ providerId, permissionMode: config.allowUnrestricted ? "full" : "auto", projectId: config.projectId, title: `${agent.name} (Letta)`, environment: { type: "provider", environmentProviderId: config.environmentProviderId, inputs: {}, machine: { type: "existing", hostId: config.hostId } }, prompt: "Say hello and briefly remind me what you do." });
     } catch { throw new Error("Could not start the Letta chat. Check project, host, workspace provider and ACP readiness. Details withheld."); }
+    pendingChats.set(agent.id, thread.id);
     await bb.storage.kv.set(key, thread.id);
+    pendingChats.delete(agent.id);
     return { threadId: thread.id };
   });
   bb.rpc.register(rpcContract, {
@@ -164,9 +192,13 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.background.schedule("roster-refresh", "*/5 * * * *", async () => { try { await refresh("sync"); } catch { /* stale roster retained; safe warning already logged */ } });
   settings.onChange((next, prev) => {
-    if (["container", "dockerExecutable", "appServerUrl", "allowUnrestricted"].some(key => next[key as keyof typeof next] !== prev[key as keyof typeof prev])) {
+    if (["container", "dockerExecutable", "appServerUrl", "allowUnrestricted", "projectId", "hostId", "environmentProviderId"].some(key => next[key as keyof typeof next] !== prev[key as keyof typeof prev])) {
       generation++; ready = false; lastSync = 0;
-      void refresh("sync").catch(() => {}).finally(() => { if (generation !== 0 && !ready && !disposed) lastSync = 0; });
+      const requested = generation;
+      void refresh("sync").catch(() => {}).finally(() => {
+        // A settings event can join old in-flight work. Run again after it settles.
+        if (generation >= requested && !ready && !disposed) void refresh("sync").catch(() => {});
+      });
     }
   });
   bb.onDispose(() => { disposed = true; generation++; for (const controller of controllers) controller.abort(); });

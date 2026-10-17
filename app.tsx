@@ -51,6 +51,55 @@ function initials(name: string): string {
 // Preserve the last successful display across sidebar navigation/remounts.
 let rosterSnapshot: Agent[] | null = null;
 let avatarSnapshot: Record<string, string> = {};
+type AvatarEntry = { version: number; url: string | null; expires: number; job?: Promise<void> };
+const avatarCache = new Map<string, AvatarEntry>();
+const avatarQueue = new Map<AvatarEntry, () => Promise<void>>();
+let avatarWorkers = 0;
+function pumpAvatars() {
+  while (avatarWorkers < 4 && avatarQueue.size) {
+    const [entry, job] = avatarQueue.entries().next().value!;
+    avatarQueue.delete(entry);
+    avatarWorkers++;
+    void job().finally(() => { avatarWorkers--; pumpAvatars(); });
+  }
+}
+function snapshotAvatars() {
+  const next: Record<string, string> = {};
+  for (const agent of rosterSnapshot ?? []) {
+    const entry = avatarCache.get(agent.id);
+    if (entry?.version === agent.avatarVersion && entry.url) next[agent.id] = entry.url;
+  }
+  avatarSnapshot = next;
+  return next;
+}
+
+function requestAvatar(agent: Agent, get: () => Promise<{ url: string | null }>): Promise<void> | undefined {
+  let entry = avatarCache.get(agent.id);
+  if (!entry || entry.version !== agent.avatarVersion) {
+    entry = { version: agent.avatarVersion, url: null, expires: 0 };
+    avatarCache.set(agent.id, entry);
+  }
+  if (!entry.job && entry.expires <= Date.now()) {
+    const target = entry;
+    target.job = new Promise<void>(resolve => {
+      avatarQueue.set(target, async () => {
+        try {
+          if (avatarCache.get(agent.id) !== target) return;
+          const avatar = await get();
+          target.url = avatar.url ?? null;
+          target.expires = avatar.url ? Infinity : Date.now() + 30_000;
+        } catch {
+          target.url = null;
+          target.expires = Date.now() + 30_000;
+        } finally {
+          target.job = undefined;
+          resolve();
+        }
+      });
+    });
+  }
+  return entry.job;
+}
 
 /** Agent roster + optional avatars. RPC has no transport abort API; cancel locally. */
 function useAgents() {
@@ -62,6 +111,7 @@ function useAgents() {
   const [loading, setLoading] = useState(true);
   const lifetime = useRef<AbortController | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
+  const watchedAvatars = useRef(new WeakMap<Promise<void>, AbortSignal>());
   const refetch = useCallback(() => {
     const signal = lifetime.current?.signal;
     if (!signal || signal.aborted || inFlight.current) return;
@@ -74,24 +124,30 @@ function useAgents() {
         setAgents(result.agents);
         setError(null);
         setWarning(result.warning ?? (result.stale ? "Showing cached agents; roster refresh is unavailable." : null));
-        const next: Record<string, string> = {};
-        let cursor = 0;
-        // Four workers bound concurrency, including while the roster refreshes.
-        await Promise.all(Array.from({ length: Math.min(4, result.agents.length) }, async () => {
-          while (!signal.aborted && cursor < result.agents.length) {
-            const agent = result.agents[cursor++]!;
-            try {
-              const avatar = await rpc.call("avatar_get", { agentId: agent.id, version: agent.avatarVersion });
-              if (!signal.aborted && avatar.url) next[agent.id] = avatar.url;
-            } catch {
-              // Avatar failures never discard the roster or fail the load.
-            }
-          }
-        }));
-        if (!signal.aborted) {
-          avatarSnapshot = { ...avatarSnapshot, ...next };
-          setAvatars(avatarSnapshot);
+        if (!result.stale) {
+          const ids = new Set(result.agents.map(agent => agent.id));
+          for (const id of avatarCache.keys()) if (!ids.has(id)) avatarCache.delete(id);
         }
+        for (const agent of result.agents) {
+          const job = requestAvatar(agent, () => rpc.call("avatar_get", { agentId: agent.id, version: agent.avatarVersion }));
+          if (job && watchedAvatars.current.get(job) !== signal) {
+            watchedAvatars.current.set(job, signal);
+            void job.then(() => {
+              const snapshot = snapshotAvatars();
+              if (!signal.aborted) setAvatars(snapshot);
+            });
+          }
+        }
+        // Retire obsolete queued work even if all four transports are stalled.
+        const currentEntries = new Set(avatarCache.values());
+        for (const [entry, job] of avatarQueue) {
+          if (!currentEntries.has(entry)) {
+            avatarQueue.delete(entry);
+            void job(); // The identity guard skips RPC and settles local waiters.
+          }
+        }
+        setAvatars(snapshotAvatars());
+        pumpAvatars();
       } catch (cause) {
         if (!signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
@@ -446,29 +502,39 @@ function SidebarList(props: PluginThreadListProps) {
   const [starting, setStarting] = useState<Set<string>>(() => new Set());
   const pending = useRef(new Set<string>());
   const mounted = useRef(false);
+  const intent = useRef(0);
+  const active = useRef(props.activeThreadId);
+  if (active.current !== props.activeThreadId) {
+    active.current = props.activeThreadId;
+    intent.current++;
+  }
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    return () => { mounted.current = false; intent.current++; };
   }, []);
 
   const openAgentChat = useCallback(
     async (agent: Agent) => {
       if (!mounted.current || pending.current.has(agent.id)) return;
+      const requestIntent = ++intent.current;
+      const requestActive = active.current;
       pending.current.add(agent.id);
       setStarting(new Set(pending.current));
       setError(null);
       try {
         const result = await rpc.call("chat_start", { agentId: agent.id });
+        // Latest agent intent wins; external/manual navigation invalidates the
+        // request too. The synchronous per-agent pending set still deduplicates.
         // Overtake semantics: plain toThread() navigates in place. Passing
         // { split: true } here hands the open to bb's split placement rules
         // (right split by default), which is what flung agent chats into
         // their own pane instead of replacing the current view.
-        if (!mounted.current) return;
-        if (result.threadId !== props.activeThreadId) navigate.toThread(result.threadId);
+        if (!mounted.current || requestIntent !== intent.current || requestActive !== active.current) return;
+        if (result.threadId !== active.current) navigate.toThread(result.threadId);
         props.onNavigate();
       } catch (cause) {
-        if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause));
+        if (mounted.current && requestIntent === intent.current && requestActive === active.current) setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
         pending.current.delete(agent.id);
         if (mounted.current) setStarting(new Set(pending.current));
@@ -477,27 +543,34 @@ function SidebarList(props: PluginThreadListProps) {
     [rpc, navigate, props.onNavigate, props.activeThreadId],
   );
 
-  const tasksByAgent = agentTasks(agents ?? [], threads);
-  const taskIds = new Set([...tasksByAgent.values()].flat().map(thread => thread.id));
+  const tasksByAgent = useMemo(() => agentTasks(agents ?? [], threads), [agents, threads]);
+  const taskSets = useMemo(() => new Map([...tasksByAgent].map(([id, tasks]) => [id, new Set(tasks.map(task => task.id))])), [tasksByAgent]);
+  const taskIds = useMemo(() => new Set([...taskSets.values()].flatMap(ids => [...ids])), [taskSets]);
+  const providerIds = useMemo(() => new Set((agents ?? []).flatMap(agent => [agent.providerId, ...(agent.providerIds ?? [])])), [agents]);
 
   // Include dispatched children even when they run on another provider.
-  const stateByAgentId = new Map<string, AgentDotState>();
+  const stateByAgentId = useMemo(() => {
+  const states = new Map<string, AgentDotState>();
   for (const agent of agents ?? []) {
-    stateByAgentId.set(
+    states.set(
       agent.id,
       agentDotState(
         threads.filter(
-          (thread) => !thread.isArchived && (ownsThread(agent, thread) || tasksByAgent.get(agent.id)?.some(task => task.id === thread.id)),
+          (thread) => !thread.isArchived && (ownsThread(agent, thread) || taskSets.get(agent.id)?.has(thread.id)),
         ),
       ),
     );
   }
 
+  return states;
+  }, [agents, threads, taskSets]);
+
+  const { grouped, loose, visibleCount } = useMemo(() => {
   // Agent ownership: a thread belongs to an agent when it runs on that
   // agent's provider. Derived from the loaded roster — while agents === null
   // (still loading) nothing is filtered, matching pre-0.3.14 behavior.
   const isAgentThread = (thread: PluginSidebarThread): boolean =>
-    !thread.isArchived && (taskIds.has(thread.id) || (agents ?? []).some((agent) => ownsThread(agent, thread)));
+    !thread.isArchived && (taskIds.has(thread.id) || providerIds.has(thread.providerId));
 
   // Agents open their saved conversation directly; only dispatched tasks nest.
   // Keep owned conversations and nested tasks out of the ordinary Threads list.
@@ -514,9 +587,11 @@ function SidebarList(props: PluginThreadListProps) {
       loose.push(thread);
     }
   }
-  const visibleCount = threads.filter((thread) => !thread.isArchived && !isAgentThread(thread)).length;
+  const visibleCount = loose.length + [...grouped.values()].reduce((count, rows) => count + rows.length, 0);
+  return { grouped, loose, visibleCount };
+  }, [threads, sections, taskIds, providerIds]);
 
-  const onNavigate = useCallback(() => props.onNavigate(), [props]);
+  const onNavigate = useCallback(() => { intent.current++; props.onNavigate(); }, [props.onNavigate]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-0.5 overflow-y-auto px-1.5 py-2">

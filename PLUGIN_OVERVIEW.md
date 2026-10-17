@@ -24,7 +24,7 @@ Generated entries run **`npx -y @letta-ai/letta-acp@0.1.10`**, pinned because **
 
 Use `ws://` only on a trusted local network; use `wss://` outside it. TLS is not enforced by the plugin.
 
-Defaults are Letta **`standard`** and BB **`auto`** approvals. `allowUnrestricted` explicitly opts into Letta **`unrestricted`** and **`full`** permissions for new BB threads. Existing threads preserve their BB permissions; toggling the setting does not reconfigure an already-running session automatically.
+Defaults are Letta **`standard`** and BB **`auto`** approvals. `allowUnrestricted` explicitly opts into Letta **`unrestricted`** and **`full`** permissions for new BB threads. Existing threads preserve their BB permissions. Providers absent from the roster retain their settings, including unrestricted permissions, until explicit cleanup; toggling the setting is not global revocation.
 
 ## Stable identity and conservative updates
 

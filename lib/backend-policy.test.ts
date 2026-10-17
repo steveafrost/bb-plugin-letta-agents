@@ -46,3 +46,23 @@ test("single flight shares simultaneous chats and releases lock on success/error
   await work("agent"); assert.equal(calls, 3);
   await assert.rejects(work("bad")); await assert.rejects(work("bad")); assert.equal(calls, 5);
 });
+
+test("saved identities ignore inherited properties and validate own values", () => {
+  for (const id of ["constructor", "toString", "hasOwnProperty"]) {
+    const ids = identities([agent(id)], [], {});
+    assert.equal(ids[id], stableId(id));
+    assert.equal(JSON.parse(JSON.stringify(ids))[id], stableId(id));
+  }
+  for (const value of [null, 123, {}, "", "foreign", "letta- bad"]) {
+    assert.throws(() => identities([agent("agent-1")], [], { "agent-1": value } as any), /Invalid Letta saved provider identity/);
+  }
+  assert.equal(identities([agent("agent-1")], [], { "agent-1": "letta-established" })["agent-1"], "letta-established");
+});
+test("saved identity disagreement requires explicit migration", () => {
+  assert.throws(() => identities([agent("agent-1")], [legacy], { "agent-1": "letta-established" }), /Provider identity differs/);
+});
+test("updated providers retain opaque settings and environment fields", () => {
+  const original = { ...legacy, opaque: { keep: true }, env: { ...legacy.env, CUSTOM: "keep" } };
+  const merged = mergeProviders([original], [{ ...legacy, displayName: "New" }], new Set([legacy.id]));
+  assert.deepEqual(merged[0], { ...original, displayName: "New" });
+});

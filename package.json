@@ -2,6 +2,15 @@
   "name": "bb-plugin-letta-agents",
   "version": "0.3.30",
   "type": "module",
+  "license": "MIT",
+  "author": "Steve Frost",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/steveafrost/bb-plugin-letta-agents.git"
+  },
+  "bugs": {
+    "url": "https://github.com/steveafrost/bb-plugin-letta-agents/issues"
+  },
   "scripts": {
     "test": "node --experimental-strip-types --test lib/*.test.ts server.test.ts",
     "typecheck": "tsc --noEmit"

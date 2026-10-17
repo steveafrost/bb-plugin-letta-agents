@@ -2,6 +2,19 @@
 
 A sidebar roster for local Letta agents, with avatars, activity indicators, and actions to start or resume BB chats through the ACP adapter. This is not a standalone Letta server or an ACP provider: it reads a local Letta container and synchronizes custom-agent entries in an installed adapter.
 
+## Release status and installation
+
+Release **0.3.30** is distributed from the public GitHub repository under MIT. Use the release tag rather than an unversioned development checkout:
+
+
+```sh
+git clone --branch v0.3.30 --depth 1 https://github.com/steveafrost/bb-plugin-letta-agents.git
+cd bb-plugin-letta-agents
+bb plugin install .
+```
+
+Installing runs trusted third-party code. Review the source and security notes first. Configure the settings below for your installation; installation alone does not provision the dependencies or enable new chats. Community marketplace availability depends on review and acceptance of the submission.
+
 ## Requirements and setup
 
 - BB **>=0.46** and Plugin SDK **>=0.6.49**; development dependency is pinned to SDK **0.6.49**. These are manifest constraints, not a claim that every newer version has been tested.
@@ -43,19 +56,19 @@ The token is copied into **plaintext ACP `customAgents` settings** as `env.LETTA
 
 Use **`ws://` only on a trusted local network**. Use **`wss://` outside that boundary** to protect credentials and traffic in transit. URL validation accepts either scheme and rejects embedded credentials, query strings, and fragments; it does not enforce TLS or verify the endpoint's operational safety.
 
-By default, generated ACP entries use Letta **`standard`** permission mode and newly spawned BB threads use **`auto`** approvals. Enabling `allowUnrestricted` changes synchronized entries to Letta **`unrestricted`** and newly spawned threads to BB **`full`** permissions. Existing threads retain their BB permission mode; toggling this setting does not retroactively grant or revoke it, or guarantee reconfiguration of an already-running ACP session.
+By default, generated ACP entries use Letta **`standard`** permission mode and newly spawned BB threads use **`auto`** approvals. Enabling `allowUnrestricted` changes synchronized entries to Letta **`unrestricted`** and newly spawned threads to BB **`full`** permissions. Existing threads retain their BB permission mode; toggling this setting does not retroactively grant or revoke it, or guarantee reconfiguration of an already-running ACP session. **Retained providers absent from the current roster are not rewritten, including their permission mode.** Turning unrestricted mode off is therefore not a global revocation: review absent providers and existing sessions explicitly before relying on that restriction.
 
 ## Identity, synchronization, and retention
 
 Roster identity comes from the immutable Letta agent ID, not its mutable display name. New provider IDs use `letta-id-` plus a truncated SHA-256 of that ID; BB exposes them with an `acp-` prefix. The persisted `provider-identities:v2` mapping preserves established IDs, including historical name-based provider IDs discovered by matching the remote backend and immutable agent ID. Renaming an agent does **not** force a provider rename. Duplicate IDs and ownership collisions stop synchronization rather than overwrite another agent.
 
-Synchronization replaces matching owned entries and appends new ones. **Unrelated ACP entries are never intentionally removed. Entries for removed or temporarily missing agents are intentionally retained**, as are historical mappings: clean them up manually in ACP settings after checking existing threads. An incomplete roster must not destroy providers.
+Synchronization updates matching owned entries while preserving opaque settings/environment fields, and appends new ones. A saved identity that disagrees with an existing provider requires explicit migration; it never silently adds a second identity. **Unrelated ACP entries are never intentionally removed. Entries for removed or temporarily missing agents are intentionally retained**, as are historical mappings: clean them up manually in ACP settings after checking existing threads. An incomplete roster must not destroy providers.
 
-Refreshes run non-blockingly at startup, on relevant settings changes, and every five minutes. Roster requests refresh when not ready or older than one minute; the UI polls every minute. A source-matched cached roster can remain visible with a warning after failure. Chat start requires successful roster readiness rather than silently trusting stale configuration.
+Refreshes run non-blockingly at startup, on relevant settings changes, and every five minutes. Roster requests refresh when not ready or older than one minute; the UI polls every minute. A source-matched cached roster can remain visible with a warning after failure. An existing saved chat may resume without Docker/ACP synchronization when cached roster and persisted provider source match the current configuration and thread ownership is verified. New or replacement chats still require successful current-generation synchronization and explicit targets.
 
 Within this plugin, overlapping syncs and same-agent chat starts are coalesced. Before writing adapter settings, the plugin re-reads `customAgents` and rejects a detected concurrent change. **The public settings API provides no compare-and-swap (CAS).** A cross-plugin or manual edit between that final read and write can still race and be overwritten. Avoid concurrent adapter-settings edits and retry after a conflict; this is not transactional cross-plugin synchronization.
 
-Chat references are stored by immutable agent ID, with a limited historical name-key fallback. An unarchived saved thread is reused only when its provider matches. An uncertain lookup fails safely without spawning a duplicate; archived or deleted threads may lead to a new chat; a provider mismatch stops with an error rather than silently creating a replacement.
+Chat references are stored by immutable agent ID, with a limited historical name-key fallback. Successful creations are retained in memory if saving their reference fails, preventing duplicate creation on retry within the same plugin runtime. This is not durable idempotency across a restart after a failed storage write. An unarchived saved thread is reused only when its provider matches. An uncertain lookup fails safely without spawning a duplicate; only ownership-verified archived or deleted threads may lead to a new chat; a provider mismatch stops with an error rather than silently creating a replacement.
 
 ## Picker compatibility workaround
 
@@ -67,4 +80,20 @@ When an unrelated provider has the same display name, hiding **fails open** so t
 
 This implementation is tied to the local Docker layout, the adapter's custom-agent settings, experimental BB sidebar APIs, and current picker markup. It is not a general Letta Cloud connector. It does not automatically remove retired providers or migrate existing thread permissions.
 
-**Exact clean-install verification and end-to-end live chat/streaming verification are still pending.** Source behavior and declared version floors are not a successful installation or chat test. This document makes no release, publication, marketplace acceptance, or fully tested compatibility claim.
+Release checks passed 36 automated tests, TypeScript checking, and the BB plugin build. Basic saved-chat navigation was checked in the running app; the maintainer confirmed the remaining live workflow and visual checks. These are local results, not a compatibility guarantee for other installations. The adapter remains pinned to 0.1.10; other versions are unverified.
+
+## Development and reporting issues
+
+Use a recent Node.js version with native TypeScript stripping (the current local checks use Node **26.4.0**) and npm. A native build toolchain may be needed for the SDK test harness's SQLite dependency.
+
+```sh
+npm ci
+npm test
+npm run typecheck
+```
+
+Before release, also validate a clean installation, the BB frontend build, and the live chat workflow. Do not equate unit tests with streaming compatibility. Automated CI is not yet established for the public repository.
+
+When reporting issues, include BB, Node, plugin and ACP versions, operating system, sanitized reproduction steps, and whether this is a new or saved chat. **Never attach ACP settings exports, tokens, process environments, private conversations, or unsanitized screenshots.** Report suspected credential exposure privately rather than posting it in a public issue; rotate affected credentials using your infrastructure's procedure.
+
+Licensed under the [MIT License](LICENSE).

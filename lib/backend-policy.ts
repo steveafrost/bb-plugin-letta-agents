@@ -20,7 +20,7 @@ export function validEndpoint(value: string): string {
 }
 /** Preserve established providers by immutable backend ID, never by display name alone. */
 export function identities(agents: AgentRecord[], current: CustomAgent[], saved: Record<string, string>, endpoint?: string): Record<string, string> {
-  const result: Record<string, string> = {};
+  const result: Record<string, string> = Object.create(null);
   const used = new Set<string>();
   for (const agent of agents) {
     validAgentId(agent.id);
@@ -28,7 +28,10 @@ export function identities(agents: AgentRecord[], current: CustomAgent[], saved:
     const matches = current.filter(entry => entry.id.startsWith("letta-") && entry.env?.LETTA_AGENT_ID === agent.id && entry.env?.LETTA_ACP_BACKEND === "remote");
     if (matches.length > 1) throw new Error("Duplicate Letta providers; resolve aliases before synchronization.");
     if (endpoint && matches.some(entry => entry.env?.LETTA_APP_SERVER_URL !== endpoint)) throw new Error("Provider endpoint differs; explicit migration required.");
-    const id = saved[agent.id] ?? matches[0]?.id ?? stableId(agent.id);
+    const stored = Object.hasOwn(saved, agent.id) ? saved[agent.id] : undefined;
+    if (stored !== undefined && (typeof stored !== "string" || !/^letta-[a-zA-Z0-9_-]{1,199}$/.test(stored))) throw new Error("Invalid Letta saved provider identity.");
+    if (stored && matches[0] && stored !== matches[0].id) throw new Error("Provider identity differs; explicit migration required.");
+    const id = stored ?? matches[0]?.id ?? stableId(agent.id);
     if (used.has(id)) throw new Error("Provider identity collision; sync stopped.");
     if (current.some(entry => entry.id === id && entry.env?.LETTA_AGENT_ID !== agent.id)) throw new Error("Provider ID belongs to another agent; sync stopped.");
     used.add(id); result[agent.id] = id;
@@ -39,7 +42,10 @@ export function identities(agents: AgentRecord[], current: CustomAgent[], saved:
 export function mergeProviders(current: CustomAgent[], desired: CustomAgent[], owned: Set<string>): CustomAgent[] {
   const replacements = new Map(desired.map(entry => [entry.id, entry]));
   for (const entry of desired) if (current.some(old => old.id === entry.id) && !owned.has(entry.id)) throw new Error("Refusing to overwrite an unowned ACP provider.");
-  const result = current.map(entry => replacements.get(entry.id) ?? entry);
+  const result = current.map(entry => {
+    const replacement = replacements.get(entry.id);
+    return replacement ? { ...entry, ...replacement, env: { ...entry.env, ...replacement.env } } : entry;
+  });
   const existing = new Set(current.map(entry => entry.id));
   return [...result, ...desired.filter(entry => !existing.has(entry.id))];
 }
