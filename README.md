@@ -70,6 +70,19 @@ Within this plugin, overlapping syncs and same-agent chat starts are coalesced. 
 
 Chat references are stored by immutable agent ID, with a limited historical name-key fallback. Successful creations are retained in memory if saving their reference fails, preventing duplicate creation on retry within the same plugin runtime. This is not durable idempotency across a restart after a failed storage write. An unarchived saved thread is reused only when its provider matches. An uncertain lookup fails safely without spawning a duplicate; only ownership-verified archived or deleted threads may lead to a new chat; a provider mismatch stops with an error rather than silently creating a replacement.
 
+## Sidebar thread nesting
+
+The Threads section nests visible BB child threads beneath their `parentThreadId`,
+including grandchildren and deeper descendants. Use the chevron beside a parent
+row to expand or collapse its children without opening the conversation. Branches
+start collapsed; navigating to a child reveals its ancestors. Disclosure choices
+survive sidebar remounts within the current frontend session, but not app reloads.
+Root threads retain section ordering; descendants follow their parent even when
+assigned to another section. Threads whose parent is absent from the visible list
+remain accessible as roots. Agent-owned conversations and delegated tasks retain
+their separate Agents-section behavior. Provider-internal subagents that do not
+create BB threads are not included.
+
 ## Picker compatibility workaround
 
 There is no upstream supported API here for hiding an enabled provider only from the picker. The default hiding behavior injects **DOM-dependent CSS**, targeting dialog buttons by current classes and title text. It is a compatibility workaround, not provider disablement or an access-control boundary. BB markup changes may stop it working.

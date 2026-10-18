@@ -29,6 +29,10 @@ import type { rpcContract } from "./server";
 import { cn } from "@/lib/utils";
 import { providerPickerCss } from "./lib/picker";
 import { agentTasks } from "./lib/agent-tasks";
+import { threadTree, visibleThreadRows } from "./lib/thread-tree";
+
+// Preserve disclosure choices across sidebar navigation/remounts.
+let expandedThreadSnapshot = new Set<string>();
 
 type Agent = {
   id: string;
@@ -459,16 +463,38 @@ function ThreadRow({
   isActive,
   onNavigate,
   nested = false,
+  depth = 0,
+  hasChildren = false,
+  expanded = false,
+  onToggle,
 }: {
   thread: PluginSidebarThread;
   isActive: boolean;
   onNavigate: () => void;
   nested?: boolean;
+  depth?: number;
+  hasChildren?: boolean;
+  expanded?: boolean;
+  onToggle?: () => void;
 }) {
   const navigate = useBbNavigate();
   const target = useMemo(() => threadActionTarget(thread), [thread]);
   return (
     <ThreadActionsContextMenu thread={target}>
+      <div className="relative" style={depth > 0 ? { marginLeft: Math.min(depth, 12) * 14 } : undefined}>
+      {hasChildren && (
+        <button
+          type="button"
+          aria-label={`${expanded ? "Collapse" : "Expand"} child threads`}
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className="absolute left-0 top-1/2 z-10 flex size-6 -translate-y-1/2 items-center justify-center rounded hover:bg-accent focus-visible:outline focus-visible:outline-2"
+        >
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className={cn("size-3 transition-transform", expanded && "rotate-90")} aria-hidden="true">
+            <path d="m6 4 4 4-4 4" />
+          </svg>
+        </button>
+      )}
       <a
         href={thread.href}
         onClick={(event) => {
@@ -481,6 +507,7 @@ function ThreadRow({
           nested
             ? "py-1 pl-8 pr-[3.75rem] text-xs text-muted-foreground hover:text-foreground"
             : "rounded-md py-1.5 pl-2 pr-[3.75rem] text-foreground/90",
+          (hasChildren || depth > 0) && "pl-6",
           isActive && "bg-accent",
         )}
       >
@@ -489,6 +516,7 @@ function ThreadRow({
         </span>
         <ThreadRowControls thread={thread} />
       </a>
+      </div>
     </ThreadActionsContextMenu>
   );
 }
@@ -565,6 +593,30 @@ function SidebarList(props: PluginThreadListProps) {
   return states;
   }, [agents, threads, taskSets]);
 
+  const [expandedThreads, setExpandedThreads] = useState(() => new Set(expandedThreadSnapshot));
+  const tree = useMemo(() => threadTree(threads.filter(thread =>
+    !thread.isArchived && !taskIds.has(thread.id) && !providerIds.has(thread.providerId),
+  )), [threads, taskIds, providerIds]);
+  const revealedActive = useRef<string | null>(null);
+  useEffect(() => {
+    const id = props.activeThreadId;
+    if (!id || revealedActive.current === id || !tree.parents.has(id)) return;
+    revealedActive.current = id;
+    setExpandedThreads(previous => {
+      const next = new Set(previous);
+      let parent = tree.parents.get(id);
+      while (parent) { next.add(parent); parent = tree.parents.get(parent); }
+      expandedThreadSnapshot = next;
+      return next;
+    });
+  }, [props.activeThreadId, tree]);
+  const toggleThread = (id: string) => setExpandedThreads(previous => {
+    const next = new Set(previous);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    expandedThreadSnapshot = next;
+    return next;
+  });
+
   const { grouped, loose, visibleCount } = useMemo(() => {
   // Agent ownership: a thread belongs to an agent when it runs on that
   // agent's provider. Derived from the loaded roster — while agents === null
@@ -579,7 +631,7 @@ function SidebarList(props: PluginThreadListProps) {
   const grouped = new Map<string, PluginSidebarThread[]>();
   for (const section of sections) grouped.set(section.id, []);
   const loose: PluginSidebarThread[] = [];
-  for (const thread of threads) {
+  for (const thread of tree.roots) {
     if (thread.isArchived || isAgentThread(thread)) continue;
     if (thread.sectionId !== null && sectionIds.has(thread.sectionId)) {
       grouped.get(thread.sectionId)!.push(thread);
@@ -589,7 +641,7 @@ function SidebarList(props: PluginThreadListProps) {
   }
   const visibleCount = loose.length + [...grouped.values()].reduce((count, rows) => count + rows.length, 0);
   return { grouped, loose, visibleCount };
-  }, [threads, sections, taskIds, providerIds]);
+  }, [tree, sections, taskIds, providerIds]);
 
   const onNavigate = useCallback(() => { intent.current++; props.onNavigate(); }, [props.onNavigate]);
 
@@ -649,20 +701,18 @@ function SidebarList(props: PluginThreadListProps) {
       <div className="px-2 pb-0.5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
         Threads
       </div>
-      {sections.map((section) =>
-        grouped.get(section.id)!.map((thread) => (
-          <ThreadRow
-            key={thread.id}
-            thread={thread}
-            isActive={props.activeThreadId === thread.id}
-            onNavigate={onNavigate}
-          />
-        )),
-      )}
-      {loose.map((thread) => (
+      {visibleThreadRows(
+        [...sections.flatMap(section => grouped.get(section.id) ?? []), ...loose],
+        tree.children,
+        expandedThreads,
+      ).map(({ thread, depth }) => (
         <ThreadRow
           key={thread.id}
           thread={thread}
+          depth={depth}
+          hasChildren={Boolean(tree.children.get(thread.id)?.length)}
+          expanded={expandedThreads.has(thread.id)}
+          onToggle={() => toggleThread(thread.id)}
           isActive={props.activeThreadId === thread.id}
           onNavigate={onNavigate}
         />
