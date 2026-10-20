@@ -83,6 +83,10 @@ remain accessible as roots. Agent-owned conversations and delegated tasks retain
 their separate Agents-section behavior. Provider-internal subagents that do not
 create BB threads are not included.
 
+## Sidebar status dots
+
+An agent row's dot aggregates only the threads the sidebar renders for that agent: its **saved chat** — the thread clicking the row opens — and the **dispatched tasks** nested beneath it. Provider identity alone does not qualify a thread, because provider-owned threads that are neither are hidden from the list and would otherwise raise an unread or working dot with no row to click and clear it. The saved chat reference is resolved server-side (`chat-start` and `agents_list` share one lookup) and returned as `chatThreadId`. A thread left over from an earlier probe or migration can still occupy a provider; it no longer affects the row.
+
 ## Picker compatibility workaround
 
 There is no upstream supported API here for hiding an enabled provider only from the picker. The default hiding behavior injects **DOM-dependent CSS**, targeting dialog buttons by current classes and title text. It is a compatibility workaround, not provider disablement or an access-control boundary. BB markup changes may stop it working.

@@ -3,14 +3,16 @@ import { delimiter, dirname } from "node:path";
 import { promisify } from "node:util";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { identities, mergeProviders, singleFlight, slug, validAgentId, validContainer, validEndpoint, type CustomAgent } from "./lib/backend-policy.ts";
+import { identities, mergeProviders, singleFlight, slug, validAgentId, validContainer, validEndpoint, type AgentRecord, type CustomAgent } from "./lib/backend-policy.ts";
 const execute = promisify(execFile);
 const agentSchema = z.object({ id: z.string(), name: z.string().min(1), description: z.string().nullable().default(null), avatarVersion: z.number().int().default(1) });
 const rosterSchema = z.object({ agents: z.array(agentSchema).max(500), fetchedAt: z.number() });
 type Roster = z.infer<typeof rosterSchema>;
 const customSchema = z.array(z.object({ id: z.string(), env: z.record(z.string(), z.string()).optional() }).passthrough());
 export const rpcContract = defineRpcContract({
-  agents_list: { input: z.null(), output: z.object({ agents: z.array(z.object({ id: z.string(), name: z.string(), providerId: z.string(), providerIds: z.array(z.string()), description: z.string(), avatarVersion: z.number().int() })), stale: z.boolean(), warning: z.string().nullable() }) },
+  // chatThreadId is the saved conversation the agent row opens; the sidebar uses
+  // it to scope the row's status dot to threads it actually renders.
+  agents_list: { input: z.null(), output: z.object({ agents: z.array(z.object({ id: z.string(), name: z.string(), providerId: z.string(), providerIds: z.array(z.string()), description: z.string(), avatarVersion: z.number().int(), chatThreadId: z.string().nullable() })), stale: z.boolean(), warning: z.string().nullable() }) },
   avatar_get: { input: z.object({ agentId: z.string(), version: z.number().int() }), output: z.object({ url: z.string().nullable() }) },
   chat_start: { input: z.object({ agentId: z.string() }), output: z.object({ threadId: z.string() }) },
 });
@@ -117,6 +119,20 @@ export default async function plugin(bb: BbPluginApi) {
     if (!ready || !cached || Date.now() - lastSync > 60_000) return refresh("sync");
     return cached;
   }
+  // The saved conversation for one agent: the current reference first, then the
+  // two historical name-based keys. Shared by chat_start and agents_list so the
+  // sidebar's dot scopes to the same thread a click opens.
+  async function savedChatId(agent: AgentRecord, ids: Record<string, string>, rosterAgents: AgentRecord[]): Promise<string | undefined> {
+    const pending = pendingChats.get(agent.id);
+    if (pending) return pending;
+    const current = await bb.storage.kv.get<string>(`chat-id:${agent.id}`);
+    if (current) return current;
+    const byIdentity = await bb.storage.kv.get<string>(`chat:${ids[agent.id]}`);
+    if (byIdentity) return byIdentity;
+    return rosterAgents.filter(other => slug(other.name) === slug(agent.name)).length === 1
+      ? await bb.storage.kv.get<string>(`chat:letta-${slug(agent.name)}`)
+      : undefined;
+  }
   const startChat = singleFlight(async (rawId: string) => {
     const epoch = generation;
     const config = await settings.get();
@@ -135,9 +151,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (typeof identity !== "string" || !/^letta-[a-zA-Z0-9_-]{1,199}$/.test(identity)) throw new Error("Invalid Letta saved provider identity.");
     const providerId = `acp-${identity}`;
     const key = `chat-id:${agent.id}`;
-    let existing = pendingChats.get(agent.id) ?? await bb.storage.kv.get<string>(key);
-    if (!existing) existing = await bb.storage.kv.get<string>(`chat:${ids[agent.id]}`);
-    if (!existing && current.agents.filter(a => slug(a.name) === slug(agent.name)).length === 1) existing = await bb.storage.kv.get<string>(`chat:letta-${slug(agent.name)}`);
+    const existing = await savedChatId(agent, ids, current.agents);
     if (existing) {
       // Transport/auth/not-found errors do NOT imply deletion. Surface a safe
       // error rather than spawning a duplicate on an uncertain lookup.
@@ -176,7 +190,10 @@ export default async function plugin(bb: BbPluginApi) {
       try { value = await roster(); } catch { const cached = await cachedRoster(); if (!cached) throw new Error(warning ?? "Letta is not ready. Check settings and retry."); value = cached; }
       const ids = await bb.storage.kv.get<Record<string, string>>("provider-identities:v2") ?? {};
       const aliases = await bb.storage.kv.get<Record<string, string[]>>("provider-aliases:v2") ?? {};
-      return { agents: value.agents.map(agent => ({ id: agent.id, name: agent.name, providerId: `acp-${ids[agent.id]}`, providerIds: aliases[agent.id] ?? [`acp-${ids[agent.id]}`], description: agent.description ?? "", avatarVersion: agent.avatarVersion })), stale: !ready, warning };
+      // Resolve each agent's saved chat exactly as chat_start does, so a row's dot
+      // can be scoped to the thread clicking it opens.
+      const chats = await Promise.all(value.agents.map(agent => savedChatId(agent, ids, value.agents)));
+      return { agents: value.agents.map((agent, index) => ({ id: agent.id, name: agent.name, providerId: `acp-${ids[agent.id]}`, providerIds: aliases[agent.id] ?? [`acp-${ids[agent.id]}`], description: agent.description ?? "", avatarVersion: agent.avatarVersion, chatThreadId: chats[index] ?? null })), stale: !ready, warning };
     },
     avatar_get: async ({ agentId }) => {
       try {

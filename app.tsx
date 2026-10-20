@@ -29,6 +29,7 @@ import type { rpcContract } from "./server";
 import { cn } from "@/lib/utils";
 import { providerPickerCss } from "./lib/picker";
 import { agentTasks } from "./lib/agent-tasks";
+import { presenceThreads } from "./lib/agent-presence";
 import { threadTree, visibleThreadRows } from "./lib/thread-tree";
 
 // Preserve disclosure choices across sidebar navigation/remounts.
@@ -41,6 +42,8 @@ type Agent = {
   providerIds?: string[];
   description: string;
   avatarVersion: number;
+  /** The saved conversation this row opens; null until one is created. */
+  chatThreadId: string | null;
 };
 
 function initials(name: string): string {
@@ -177,10 +180,6 @@ function useAgents() {
     };
   }, [refetch]);
   return { agents, avatars, error, warning, loading, refetch };
-}
-
-function ownsThread(agent: Agent, thread: PluginSidebarThread): boolean {
-  return thread.providerId === agent.providerId || (agent.providerIds?.includes(thread.providerId) ?? false);
 }
 
 // Indicator literals the builtin thread-list treats as "busy/working"
@@ -576,18 +575,13 @@ function SidebarList(props: PluginThreadListProps) {
   const taskIds = useMemo(() => new Set([...taskSets.values()].flatMap(ids => [...ids])), [taskSets]);
   const providerIds = useMemo(() => new Set((agents ?? []).flatMap(agent => [agent.providerId, ...(agent.providerIds ?? [])])), [agents]);
 
-  // Include dispatched children even when they run on another provider.
+  // Scope each dot to the threads this sidebar actually renders for the agent:
+  // the saved chat it opens plus its dispatched tasks. A provider-owned thread
+  // that is neither has no row to click, so it must not raise a dot.
   const stateByAgentId = useMemo(() => {
   const states = new Map<string, AgentDotState>();
   for (const agent of agents ?? []) {
-    states.set(
-      agent.id,
-      agentDotState(
-        threads.filter(
-          (thread) => !thread.isArchived && (ownsThread(agent, thread) || taskSets.get(agent.id)?.has(thread.id)),
-        ),
-      ),
-    );
+    states.set(agent.id, agentDotState(presenceThreads(agent, threads, taskSets.get(agent.id))));
   }
 
   return states;

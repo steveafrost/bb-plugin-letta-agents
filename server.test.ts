@@ -200,6 +200,25 @@ for (const pausedKey of ["provider-source:v2", "provider-identities:v2", "provid
   });
 }
 
+test("agents_list exposes the saved chat so the sidebar can scope an agent's dot", async () => {
+  const { harness } = await savedHost();
+  try {
+    const result = await harness.behavior.callRpc("agents_list", null) as { agents: { id: string; chatThreadId: string | null }[] };
+    assert.deepEqual(result.agents.map(agent => [agent.id, agent.chatThreadId]), [["agent-id", "saved-chat"]]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("agents_list reports a null saved chat when none was ever created", async () => {
+  const host = await successfulHost();
+  try {
+    await plugin(host.bb);
+    await host.harness.behavior.runSchedule("roster-refresh");
+    const result = await host.harness.behavior.callRpc("agents_list", null) as { agents: { chatThreadId: string | null }[] };
+    assert.deepEqual(result.agents.map(agent => agent.chatThreadId), [null]);
+    assert.equal(host.harness.inspection.sdk.callsTo("threads.spawn").length, 0);
+  } finally { await host.dispose(); }
+});
+
 test("saved conversation resumes with failed synchronization and empty targets", async () => {
   const { harness } = await savedHost();
   try {
