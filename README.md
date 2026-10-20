@@ -4,11 +4,11 @@ A sidebar roster for local Letta agents, with avatars, activity indicators, and 
 
 ## Release status and installation
 
-Release **0.3.30** is distributed from the public GitHub repository under MIT. Use the release tag rather than an unversioned development checkout:
+Release **0.3.32** is distributed from the public GitHub repository under MIT. Use the release tag rather than an unversioned development checkout:
 
 
 ```sh
-git clone --branch v0.3.30 --depth 1 https://github.com/steveafrost/bb-plugin-letta-agents.git
+git clone --branch v0.3.32 --depth 1 https://github.com/steveafrost/bb-plugin-letta-agents.git
 cd bb-plugin-letta-agents
 bb plugin install .
 ```
