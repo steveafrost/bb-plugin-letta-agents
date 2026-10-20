@@ -3,7 +3,7 @@ import { delimiter, dirname } from "node:path";
 import { promisify } from "node:util";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { identities, mergeProviders, singleFlight, slug, validAgentId, validContainer, validEndpoint, type AgentRecord, type CustomAgent } from "./lib/backend-policy.ts";
+import { identities, mergeProviders, singleFlight, slug, THREAD_ID_PATTERN, validAgentId, validContainer, validEndpoint, validThreadId, type AgentRecord, type CustomAgent } from "./lib/backend-policy.ts";
 const execute = promisify(execFile);
 const agentSchema = z.object({ id: z.string(), name: z.string().min(1), description: z.string().nullable().default(null), avatarVersion: z.number().int().default(1) });
 const rosterSchema = z.object({ agents: z.array(agentSchema).max(500), fetchedAt: z.number() });
@@ -11,8 +11,10 @@ type Roster = z.infer<typeof rosterSchema>;
 const customSchema = z.array(z.object({ id: z.string(), env: z.record(z.string(), z.string()).optional() }).passthrough());
 export const rpcContract = defineRpcContract({
   // chatThreadId is the saved conversation the agent row opens; the sidebar uses
-  // it to scope the row's status dot to threads it actually renders.
-  agents_list: { input: z.null(), output: z.object({ agents: z.array(z.object({ id: z.string(), name: z.string(), providerId: z.string(), providerIds: z.array(z.string()), description: z.string(), avatarVersion: z.number().int(), chatThreadId: z.string().nullable() })), stale: z.boolean(), warning: z.string().nullable() }) },
+  // it to scope the row's status dot to threads it actually renders. The pattern
+  // keeps a stale or hand-edited KV value from crossing the RPC boundary at all;
+  // a value that does not match is reported as null, never as a wildcard.
+  agents_list: { input: z.null(), output: z.object({ agents: z.array(z.object({ id: z.string(), name: z.string(), providerId: z.string(), providerIds: z.array(z.string()), description: z.string(), avatarVersion: z.number().int(), chatThreadId: z.string().regex(THREAD_ID_PATTERN).nullable() })), stale: z.boolean(), warning: z.string().nullable() }) },
   avatar_get: { input: z.object({ agentId: z.string(), version: z.number().int() }), output: z.object({ url: z.string().nullable() }) },
   chat_start: { input: z.object({ agentId: z.string() }), output: z.object({ threadId: z.string() }) },
 });
@@ -122,6 +124,11 @@ export default async function plugin(bb: BbPluginApi) {
   // The saved conversation for one agent: the current reference first, then the
   // two historical name-based keys. Shared by chat_start and agents_list so the
   // sidebar's dot scopes to the same thread a click opens.
+  //
+  // This resolves the pointer only. chat_start treats it as a claim: it loads the
+  // thread and rejects a provider mismatch before resuming. agents_list skips that
+  // per-agent SDK lookup on every poll, so it reports providerIds with the id and
+  // presenceThreads re-checks ownership before drawing a dot.
   async function savedChatId(agent: AgentRecord, ids: Record<string, string>, rosterAgents: AgentRecord[]): Promise<string | undefined> {
     const pending = pendingChats.get(agent.id);
     if (pending) return pending;
@@ -193,7 +200,7 @@ export default async function plugin(bb: BbPluginApi) {
       // Resolve each agent's saved chat exactly as chat_start does, so a row's dot
       // can be scoped to the thread clicking it opens.
       const chats = await Promise.all(value.agents.map(agent => savedChatId(agent, ids, value.agents)));
-      return { agents: value.agents.map((agent, index) => ({ id: agent.id, name: agent.name, providerId: `acp-${ids[agent.id]}`, providerIds: aliases[agent.id] ?? [`acp-${ids[agent.id]}`], description: agent.description ?? "", avatarVersion: agent.avatarVersion, chatThreadId: chats[index] ?? null })), stale: !ready, warning };
+      return { agents: value.agents.map((agent, index) => ({ id: agent.id, name: agent.name, providerId: `acp-${ids[agent.id]}`, providerIds: aliases[agent.id] ?? [`acp-${ids[agent.id]}`], description: agent.description ?? "", avatarVersion: agent.avatarVersion, chatThreadId: validThreadId(chats[index] ?? "") })), stale: !ready, warning };
     },
     avatar_get: async ({ agentId }) => {
       try {

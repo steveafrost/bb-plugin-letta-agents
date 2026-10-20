@@ -85,7 +85,11 @@ create BB threads are not included.
 
 ## Sidebar status dots
 
-An agent row's dot aggregates only the threads the sidebar renders for that agent: its **saved chat** — the thread clicking the row opens — and the **dispatched tasks** nested beneath it. Provider identity alone does not qualify a thread, because provider-owned threads that are neither are hidden from the list and would otherwise raise an unread or working dot with no row to click and clear it. The saved chat reference is resolved server-side (`chat-start` and `agents_list` share one lookup) and returned as `chatThreadId`. A thread left over from an earlier probe or migration can still occupy a provider; it no longer affects the row.
+An agent row's dot aggregates only the threads the sidebar renders for that agent: its **saved chat** — the thread clicking the row opens — and the **dispatched tasks** nested beneath it. Provider identity alone does not qualify a thread, because provider-owned threads that are neither are hidden from the list and would otherwise raise an unread or working dot with no row to click and clear it. A thread left over from an earlier probe or migration can still occupy a provider; it no longer affects the row.
+
+The saved chat is resolved server-side: `chat_start` and `agents_list` share one `savedChatId` lookup, and `agents_list` reports it as `chatThreadId` so the sidebar scopes its dot to exactly the thread a click opens. The two callers treat that value differently by design. `chat_start` treats it as a **claim**: it loads the thread and rejects a provider mismatch before resuming. `agents_list` only forwards the pointer — loading every agent's thread on every poll would cost one SDK call per agent — and the sidebar re-checks ownership before drawing a dot.
+
+`chatThreadId` is constrained at the RPC boundary to the BB thread-id shape, so a stale or hand-edited plugin-KV row is reported as `null` rather than reaching the sidebar as a link target. The saved chat must also belong to the agent's own provider (or a recorded alias) before it earns a dot; a dispatched task on another provider is admitted, because `chat_start` permits that.
 
 ## Picker compatibility workaround
 

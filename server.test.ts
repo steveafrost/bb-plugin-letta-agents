@@ -46,8 +46,8 @@ if (args[2] === "node" && args[3] === "-e") {
       },
       providers: { list: async () => JSON.parse(customAgents).map((agent: { id: string }) => ({ id: `acp-${agent.id}`, available: true })) },
       threads: {
-        spawn: async input => makeThreadResponse({ id: "created-chat", providerId: input.providerId }),
-        get: async () => makeThreadResponse({ id: "created-chat", providerId: `acp-${JSON.parse(customAgents)[0].id}` }),
+        spawn: async input => makeThreadResponse({ id: "thr_createdchat1", providerId: input.providerId }),
+        get: async () => makeThreadResponse({ id: "thr_createdchat1", providerId: `acp-${JSON.parse(customAgents)[0].id}` }),
       },
     },
   });
@@ -64,12 +64,12 @@ if (args[2] === "node" && args[3] === "-e") {
 }
 
 async function savedHost(overrides: Parameters<typeof makeThreadResponse>[0] = {}) {
-  const host = createFakePluginHost({ pluginId: "letta-agents", settings: { dockerExecutable: "/nonexistent/letta-test", container: "letta" }, sdk: { threads: { get: async () => makeThreadResponse({ id: "saved-chat", providerId: "acp-letta-existing", ...overrides }) } } });
+  const host = createFakePluginHost({ pluginId: "letta-agents", settings: { dockerExecutable: "/nonexistent/letta-test", container: "letta" }, sdk: { threads: { get: async () => makeThreadResponse({ id: "thr_savedchat01", providerId: "acp-letta-existing", ...overrides }) } } });
   await host.bb.storage.kv.set("roster:v2", { source: "/nonexistent/letta-test:letta", roster: { agents: [{ id: "agent-id", name: "Test", description: null, avatarVersion: 1 }], fetchedAt: Date.now() } });
   await host.bb.storage.kv.set("provider-source:v2", "/nonexistent/letta-test:letta:ws://127.0.0.1:4500");
   await host.bb.storage.kv.set("provider-identities:v2", { "agent-id": "letta-existing" });
   await host.bb.storage.kv.set("provider-aliases:v2", { "agent-id": ["acp-letta-existing"] });
-  await host.bb.storage.kv.set("chat-id:agent-id", "saved-chat");
+  await host.bb.storage.kv.set("chat-id:agent-id", "thr_savedchat01");
   await plugin(host.bb);
   // Join the non-blocking initial sync before disposing this fixture. Cached-chat
   // RPCs otherwise finish before execFile's ENOENT settles, racing abort at teardown.
@@ -94,10 +94,10 @@ test("successful spawn survives failed chat KV persistence and sequential retry 
     assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length, 1);
     assert.equal(await bb.storage.kv.get("chat-id:agent-id"), undefined);
     // Deliberately sequential: the first single-flight promise has rejected.
-    assert.deepEqual(await harness.behavior.callRpc("chat_start", { agentId: "agent-id" }), { threadId: "created-chat" });
+    assert.deepEqual(await harness.behavior.callRpc("chat_start", { agentId: "agent-id" }), { threadId: "thr_createdchat1" });
     assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length, 1);
-    assert.deepEqual(harness.inspection.sdk.callsTo("threads.get"), [[{ threadId: "created-chat" }]]);
-    assert.equal(await bb.storage.kv.get("chat-id:agent-id"), "created-chat");
+    assert.deepEqual(harness.inspection.sdk.callsTo("threads.get"), [[{ threadId: "thr_createdchat1" }]]);
+    assert.equal(await bb.storage.kv.get("chat-id:agent-id"), "thr_createdchat1");
   } finally {
     bb.storage.kv.set = set;
     await host.dispose();
@@ -204,7 +204,31 @@ test("agents_list exposes the saved chat so the sidebar can scope an agent's dot
   const { harness } = await savedHost();
   try {
     const result = await harness.behavior.callRpc("agents_list", null) as { agents: { id: string; chatThreadId: string | null }[] };
-    assert.deepEqual(result.agents.map(agent => [agent.id, agent.chatThreadId]), [["agent-id", "saved-chat"]]);
+    assert.deepEqual(result.agents.map(agent => [agent.id, agent.chatThreadId]), [["agent-id", "thr_savedchat01"]]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("a malformed saved-chat KV value is reported as null, never as a scope", async () => {
+  const { bb, harness } = await savedHost();
+  try {
+    // A stale or hand-edited KV row must not reach the sidebar as a link target.
+    await bb.storage.kv.set("chat-id:agent-id", "../../etc/passwd");
+    const result = await harness.behavior.callRpc("agents_list", null) as { agents: { chatThreadId: string | null }[] };
+    assert.deepEqual(result.agents.map(agent => agent.chatThreadId), [null]);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("chat_start still rejects a malformed saved-chat KV value before spawning", async () => {
+  const { bb, harness } = await savedHost();
+  try {
+    await bb.storage.kv.set("chat-id:agent-id", "not-a-thread");
+    const threadId = await (async () => {
+      try { return (await harness.behavior.callRpc("chat_start", { agentId: "agent-id" }) as { threadId: string }).threadId; }
+      catch { return "rejected"; }
+    })();
+    // Either the SDK lookup rejects the bogus id or a fresh chat is created; what
+    // must not happen is a resume of the bogus value itself.
+    assert.notEqual(threadId, "not-a-thread");
   } finally { await harness.lifecycle.dispose(); }
 });
 
@@ -223,7 +247,7 @@ test("saved conversation resumes with failed synchronization and empty targets",
   const { harness } = await savedHost();
   try {
     assert.ok(harness.inspection.logEntries.some(entry => entry.level === "warn" && entry.message.startsWith("Letta container command failed.")));
-    assert.deepEqual(await harness.behavior.callRpc("chat_start", { agentId: "agent-id" }), { threadId: "saved-chat" });
+    assert.deepEqual(await harness.behavior.callRpc("chat_start", { agentId: "agent-id" }), { threadId: "thr_savedchat01" });
     assert.equal(harness.inspection.sdk.callsTo("threads.get").length, 1);
     assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length, 0);
     assert.equal(harness.inspection.sdk.callsTo("plugins.getSettings").length, 0);

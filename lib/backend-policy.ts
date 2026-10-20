@@ -12,6 +12,20 @@ export function validAgentId(value: string): string {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/.test(value)) throw new Error("Invalid Letta agent ID.");
   return value;
 }
+/**
+ * A stored BB thread reference. The saved-chat keys are plugin KV rows, i.e.
+ * mutable state on disk, and the value crosses into the RPC boundary and then
+ * into a link the sidebar matches against live thread IDs. A malformed or stale
+ * value must never be able to widen a dot's scope, so it is constrained here
+ * and dropped (not thrown) at the call site.
+ *
+ * Single source for the pattern: the RPC contract validates against it and
+ * validThreadId coerces with it, so the boundary and the resolver cannot drift.
+ */
+export const THREAD_ID_PATTERN = /^thr_[a-z0-9]{6,64}$/;
+export function validThreadId(value: string): string | null {
+  return THREAD_ID_PATTERN.test(value) ? value : null;
+}
 export function validEndpoint(value: string): string {
   let url: URL;
   try { url = new URL(value); } catch { throw new Error("Invalid Letta WebSocket URL."); }
