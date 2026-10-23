@@ -4,7 +4,7 @@ Browse a local Letta roster with avatars and activity indicators, then start or 
 
 ## Setup you must supply
 
-Requires BB **>=0.46**, Plugin SDK **>=0.6.49** (development pin **0.6.49**), and the enabled ACP adapter **`bb--provider-acp-next`**. These are declared version constraints, not a tested-version matrix.
+Requires BB **>=0.46**, Plugin SDK **>=0.6.49** (development pin **0.6.49**), and the enabled ACP adapter **`provider-acp`**. These are declared version constraints, not a tested-version matrix.
 
 Set **`projectId`**, **`hostId`**, and **`environmentProviderId`** to existing IDs in your installation. All three default to empty and are required for a new chat. `personal-workspace` is only an example provider where installed.
 

@@ -58,7 +58,7 @@ export default async function plugin(bb: BbPluginApi) {
     const parsed = rosterSchema.safeParse(cached.roster); return parsed.success ? parsed.data : null;
   }
   async function adapterEntries(): Promise<CustomAgent[]> {
-    const result = await bb.sdk.plugins.getSettings({ pluginId: "bb--provider-acp-next" });
+    const result = await bb.sdk.plugins.getSettings({ pluginId: "provider-acp" });
     const value = result.values.customAgents;
     return customSchema.parse(typeof value === "string" ? JSON.parse(value || "[]") : value ?? []) as CustomAgent[];
   }
@@ -89,7 +89,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (JSON.stringify(await adapterEntries()) !== JSON.stringify(current)) throw new Error("ACP settings changed during sync; retry.");
       if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
       if (JSON.stringify(next) !== JSON.stringify(current)) {
-        try { await bb.sdk.plugins.updateSettings({ pluginId: "bb--provider-acp-next", values: { customAgents: JSON.stringify(next) } }); }
+        try { await bb.sdk.plugins.updateSettings({ pluginId: "provider-acp", values: { customAgents: JSON.stringify(next) } }); }
         catch { throw new Error("Unable to update ACP settings. Details withheld to protect credentials."); }
       }
       if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");

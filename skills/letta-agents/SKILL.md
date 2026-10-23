@@ -5,7 +5,7 @@ description: Configure or troubleshoot the Letta Agents sidebar plugin, its loca
 
 # Letta Agents
 
-This plugin displays local Letta agents in BB's sidebar and synchronizes their providers through the enabled `bb--provider-acp-next` adapter. It does not provision Letta or expose a `bb letta` command.
+This plugin displays local Letta agents in BB's sidebar and synchronizes their providers through the enabled `provider-acp` adapter. It does not provision Letta or expose a `bb letta` command.
 
 Read the plugin README before setup or troubleshooting. Configure `container`, `dockerExecutable`, and `appServerUrl` for the user's installation. New chats additionally require existing `projectId`, `hostId`, and `environmentProviderId` values. Never copy another installation's IDs.
 

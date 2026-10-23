@@ -18,7 +18,7 @@ Installing runs trusted third-party code. Review the source and security notes f
 ## Requirements and setup
 
 - BB **>=0.46** and Plugin SDK **>=0.6.49**; development dependency is pinned to SDK **0.6.49**. These are manifest constraints, not a claim that every newer version has been tested.
-- The enabled ACP adapter plugin **`bb--provider-acp-next`**, including its `customAgents` setting. Generated providers must be available before a chat can start.
+- The enabled ACP adapter plugin **`provider-acp`**, including its `customAgents` setting. Generated providers must be available before a chat can start.
 - Docker available to the plugin backend, permission to access its daemon, and a running local container with **Node** and the expected letta-code files. The plugin does not provision Docker, Letta, an app-server, a project, a host, or a workspace provider.
 - Node/npm and `npx` on the **ACP execution host**. The adapter launches `npx -y @letta-ai/letta-acp@0.1.10`; initial resolution may require registry access.
 - A running Letta app-server reachable from that ACP host, with a matching token.
