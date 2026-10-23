@@ -200,6 +200,33 @@ for (const pausedKey of ["provider-source:v2", "provider-identities:v2", "provid
   });
 }
 
+// The ACP plugin id is a cross-plugin contract, not an implementation detail.
+// BB 0.47.0 retired bb--provider-acp-next for the builtin provider-acp plugin,
+// and RETIRED_PLUGIN_SUCCESSORS only migrates the install and carried settings.
+// Runtime getSettings/updateSettings with a retired id resolve to an unloaded
+// plugin, 404, and throw, so every roster refresh failed before the merge while
+// the providers themselves stayed healthy. The other tests here stub
+// getSettings by method name and never assert the target id, so a rename
+// passed silently. Pin both call sites.
+test("synchronization targets the current ACP plugin id, never the retired one", async () => {
+  const host = await successfulHost();
+  const { bb, harness } = host;
+  try {
+    await plugin(bb);
+    // Force a write by clearing the saved identities the fixture seeded.
+    await bb.storage.kv.set("provider-identities:v2", {});
+    await harness.behavior.runSchedule("roster-refresh");
+    const readIds = harness.inspection.sdk.callsTo("plugins.getSettings").map(([input]) => input.pluginId);
+    const writeIds = harness.inspection.sdk.callsTo("plugins.updateSettings").map(([input]) => input.pluginId);
+    assert.deepEqual([...new Set(readIds)], ["provider-acp"]);
+    assert.deepEqual([...new Set(writeIds)], ["provider-acp"]);
+    assert.equal(readIds.length > 0 && writeIds.length > 0, true, "both call sites must be exercised");
+    const listed = await harness.behavior.callRpc("agents_list", null) as { stale: boolean; warning: string | null };
+    assert.equal(listed.stale, false);
+    assert.equal(listed.warning, null);
+  } finally { await host.dispose(); }
+});
+
 test("agents_list exposes the saved chat so the sidebar can scope an agent's dot", async () => {
   const { harness } = await savedHost();
   try {
