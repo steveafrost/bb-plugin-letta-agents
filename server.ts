@@ -140,6 +140,29 @@ export default async function plugin(bb: BbPluginApi) {
       ? await bb.storage.kv.get<string>(`chat:letta-${slug(agent.name)}`)
       : undefined;
   }
+  // The provider decides which permission modes exist; the ACP provider lists only
+  // accept-edits and full, so requesting `auto` is a 400 that surfaces as a
+  // generic spawn failure. Pick from what it advertises, keeping the restrictive
+  // mode unless unrestricted access was explicitly requested.
+  function permissionModeSelection(allowUnrestricted: boolean, supported: readonly string[]) {
+    const wanted = allowUnrestricted ? ["full"] : ["auto", "accept-edits", "full"];
+    const mode = wanted.find(candidate => supported.includes(candidate));
+    if (!mode) throw new Error("The Letta provider advertises no usable permission mode. Check the ACP adapter settings.");
+    if (!allowUnrestricted && mode === "full") throw new Error("The Letta provider does not accept a restricted permission mode; unrestricted access must be enabled explicitly.");
+    return mode as "accept-edits" | "auto" | "full";
+  }
+  // The server refuses a workspace-provider selection whose inputs contradict the
+  // provider's declared contract: a provider that declares no inputs must receive
+  // null, and one that declares inputs must receive a value that validates. A
+  // blanket `{}` fails every such no-input provider, and the spawn catch reports
+  // that only as an environment failure, so derive the selection from the provider.
+  async function chatEnvironment(config: { projectId: string; hostId: string; environmentProviderId: string }) {
+    const available = await bb.sdk.environments.listProviders({ projectId: config.projectId, hostId: config.hostId });
+    const provider = available.find(candidate => candidate.id === config.environmentProviderId);
+    if (!provider) throw new Error(`Workspace provider "${config.environmentProviderId}" is not available for this project and host. Check the workspace provider ID in settings.`);
+    if (provider.inputs !== null && !provider.acceptsEmptyInputs) throw new Error(`Workspace provider "${provider.id}" requires inputs that a Letta chat cannot supply; choose a workspace provider that accepts empty inputs.`);
+    return { type: "provider" as const, environmentProviderId: provider.id, inputs: provider.inputs === null ? null : {}, machine: { type: "existing" as const, hostId: config.hostId } };
+  }
   const startChat = singleFlight(async (rawId: string) => {
     const epoch = generation;
     const config = await settings.get();
@@ -180,12 +203,24 @@ export default async function plugin(bb: BbPluginApi) {
     if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
     if (!config.projectId || !config.hostId || !config.environmentProviderId) throw new Error("Configure chat project ID, host ID and workspace provider ID in Letta Agents settings before starting a chat.");
     const providers = await bb.sdk.providers.list({ hostId: config.hostId });
-    if (!providers.some(provider => provider.id === providerId && provider.available)) throw new Error("Letta provider is not available yet. Enable the ACP adapter/provider and retry.");
+    // One list call serves both checks below; the ACP provider is only listed with
+    // the permission modes it actually accepts, and it need not include `auto`.
+    const selected = providers.find(provider => provider.id === providerId && provider.available);
+    if (!selected) throw new Error("Letta provider is not available yet. Enable the ACP adapter/provider and retry.");
+    const permissionMode = permissionModeSelection(config.allowUnrestricted, selected.capabilities?.permissionModes ?? []);
+    if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
+    const environment = await chatEnvironment(config);
     if (epoch !== generation || disposed) throw new Error("Settings changed; retry roster synchronization.");
     let thread;
     try {
-      thread = await bb.sdk.threads.spawn({ providerId, permissionMode: config.allowUnrestricted ? "full" : "auto", projectId: config.projectId, title: `${agent.name} (Letta)`, environment: { type: "provider", environmentProviderId: config.environmentProviderId, inputs: {}, machine: { type: "existing", hostId: config.hostId } }, prompt: "Say hello and briefly remind me what you do." });
-    } catch { throw new Error("Could not start the Letta chat. Check project, host, workspace provider and ACP readiness. Details withheld."); }
+      thread = await bb.sdk.threads.spawn({ providerId, permissionMode, projectId: config.projectId, title: `${agent.name} (Letta)`, environment, prompt: "Say hello and briefly remind me what you do." });
+    } catch (error) {
+      // Naming a rejected workspace provider makes a settings mistake diagnosable;
+      // anything else keeps the generic text so no credential can leak.
+      const detail = error instanceof Error ? error.message.replace(/[\r\n]+/g, " ").trim() : "";
+      const rejected = /environment provider/i.test(detail) ? ` Workspace provider rejected the selection: ${detail.slice(0, 200)}` : "";
+      throw new Error(`Could not start the Letta chat. Check project, host, workspace provider and ACP readiness. Details withheld.${rejected}`);
+    }
     pendingChats.set(agent.id, thread.id);
     await bb.storage.kv.set(key, thread.id);
     pendingChats.delete(agent.id);
