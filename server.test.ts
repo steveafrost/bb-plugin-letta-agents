@@ -44,7 +44,10 @@ if (args[2] === "node" && args[3] === "-e") {
         getSettings: async () => ({ values: { customAgents } }),
         updateSettings: async input => { customAgents = String(input.values.customAgents); return { values: { customAgents } }; },
       },
-      providers: { list: async () => JSON.parse(customAgents).map((agent: { id: string }) => ({ id: `acp-${agent.id}`, available: true })) },
+      providers: { list: async () => JSON.parse(customAgents).map((agent: { id: string }) => ({ id: `acp-${agent.id}`, available: true, capabilities: { permissionModes: ["accept-edits", "full"] } })) },
+      // A provider that declares no inputs must be offered inputs: null; the server
+      // refuses `{}` for it, which is the regression this fixture pins.
+      environments: { listProviders: async () => [{ id: "test-workspace", inputs: null, acceptsEmptyInputs: true }] },
       threads: {
         spawn: async input => makeThreadResponse({ id: "thr_createdchat1", providerId: input.providerId }),
         get: async () => makeThreadResponse({ id: "thr_createdchat1", providerId: `acp-${JSON.parse(customAgents)[0].id}` }),
@@ -96,6 +99,12 @@ test("successful spawn survives failed chat KV persistence and sequential retry 
     // Deliberately sequential: the first single-flight promise has rejected.
     assert.deepEqual(await harness.behavior.callRpc("chat_start", { agentId: "agent-id" }), { threadId: "thr_createdchat1" });
     assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length, 1);
+    // A no-input workspace provider must be offered inputs: null. Sending `{}` is a
+    // 400 from the server, and the spawn catch reports it only as an environment error.
+    const [spawnArgs] = harness.inspection.sdk.callsTo("threads.spawn")[0] as [{ environment: { inputs: unknown }; permissionMode: string }];
+    assert.equal(spawnArgs.environment.inputs, null);
+    // The ACP provider advertises accept-edits/full only; requesting `auto` is a 400.
+    assert.equal(spawnArgs.permissionMode, "accept-edits");
     assert.deepEqual(harness.inspection.sdk.callsTo("threads.get"), [[{ threadId: "thr_createdchat1" }]]);
     assert.equal(await bb.storage.kv.get("chat-id:agent-id"), "thr_createdchat1");
   } finally {
