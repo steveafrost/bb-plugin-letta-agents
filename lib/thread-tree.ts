@@ -45,3 +45,35 @@ export function visibleThreadRows<T extends Thread>(roots: readonly T[], childre
   }
   return rows;
 }
+
+type Pinnable = { id: string; pinnedAt: number | null; pinSortKey: string | null; createdAt: number };
+
+/**
+ * bb's pinned order: a manual `pinSortKey` (lexicographic) when both rows have
+ * one, then newest pin first, then newest thread, then id. The id tiebreak
+ * keeps the order total, so re-renders never reshuffle equal rows.
+ */
+export function comparePinned(a: Pinnable, b: Pinnable): number {
+  if (a.pinSortKey !== null && b.pinSortKey !== null) {
+    const byKey = a.pinSortKey < b.pinSortKey ? -1 : a.pinSortKey > b.pinSortKey ? 1 : 0;
+    if (byKey !== 0) return byKey;
+  }
+  const byPin = (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0);
+  if (byPin !== 0) return byPin;
+  const byCreated = b.createdAt - a.createdAt;
+  if (byCreated !== 0) return byCreated;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/**
+ * Partition tree roots into bb's Pinned section (ordered by `comparePinned`)
+ * and everything else. Roots carry their descendants, so dropping a pinned
+ * root from the ordinary list also drops its subtree: an unpinned child of a
+ * pinned thread never reappears below its section.
+ */
+export function splitPinnedRoots<T extends Pinnable>(roots: readonly T[]) {
+  const pinned: T[] = [];
+  const rest: T[] = [];
+  for (const root of roots) (root.pinnedAt === null ? rest : pinned).push(root);
+  return { pinned: pinned.sort(comparePinned), rest };
+}
