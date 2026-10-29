@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
 import { providerPickerCss } from "./lib/picker";
 import { agentTasks } from "./lib/agent-tasks";
 import { presenceThreads } from "./lib/agent-presence";
-import { threadTree, visibleThreadRows } from "./lib/thread-tree";
+import { splitPinnedRoots, threadTree, visibleThreadRows } from "./lib/thread-tree";
 
 // Preserve disclosure choices across sidebar navigation/remounts.
 let expandedThreadSnapshot = new Set<string>();
@@ -611,7 +611,7 @@ function SidebarList(props: PluginThreadListProps) {
     return next;
   });
 
-  const { grouped, loose, visibleCount } = useMemo(() => {
+  const { grouped, loose, pinned, visibleCount } = useMemo(() => {
   // Agent ownership: a thread belongs to an agent when it runs on that
   // agent's provider. Derived from the loaded roster — while agents === null
   // (still loading) nothing is filtered, matching pre-0.3.14 behavior.
@@ -622,10 +622,13 @@ function SidebarList(props: PluginThreadListProps) {
   // Keep owned conversations and nested tasks out of the ordinary Threads list.
   // Ordinary threads remain grouped by section (unsectioned last).
   const sectionIds = new Set(sections.map((section) => section.id));
+  // Pinned roots come first, in bb's pinned order, and their subtrees travel
+  // with them: an unpinned child of a pinned thread must not surface below.
+  const { pinned, rest } = splitPinnedRoots(tree.roots);
   const grouped = new Map<string, PluginSidebarThread[]>();
   for (const section of sections) grouped.set(section.id, []);
   const loose: PluginSidebarThread[] = [];
-  for (const thread of tree.roots) {
+  for (const thread of rest) {
     if (thread.isArchived || isAgentThread(thread)) continue;
     if (thread.sectionId !== null && sectionIds.has(thread.sectionId)) {
       grouped.get(thread.sectionId)!.push(thread);
@@ -633,8 +636,8 @@ function SidebarList(props: PluginThreadListProps) {
       loose.push(thread);
     }
   }
-  const visibleCount = loose.length + [...grouped.values()].reduce((count, rows) => count + rows.length, 0);
-  return { grouped, loose, visibleCount };
+  const visibleCount = pinned.length + loose.length + [...grouped.values()].reduce((count, rows) => count + rows.length, 0);
+  return { grouped, loose, pinned, visibleCount };
   }, [tree, sections, taskIds, providerIds]);
 
   const onNavigate = useCallback(() => { intent.current++; props.onNavigate(); }, [props.onNavigate]);
@@ -696,7 +699,7 @@ function SidebarList(props: PluginThreadListProps) {
         Threads
       </div>
       {visibleThreadRows(
-        [...sections.flatMap(section => grouped.get(section.id) ?? []), ...loose],
+        [...pinned, ...sections.flatMap(section => grouped.get(section.id) ?? []), ...loose],
         tree.children,
         expandedThreads,
       ).map(({ thread, depth }) => (
