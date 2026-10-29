@@ -197,14 +197,18 @@ const WORKING_INDICATORS = new Set([
 
 // Dot color per non-working indicator, mirroring bb's bundled
 // ThreadStatusGlyph tone palette (unread-error/queued-failed → destructive,
-// running/success → success, attention (waiting/queued) → warning, like the
-// sidebar machines attention badge). Idle stays muted.
+// running/success → success, waiting-for-input → warning, the attention tone
+// that means the thread asks the user something). A message held for a slot —
+// the concurrency limit is the usual cause — is not a request for the user: it
+// keeps the idle color but goes hollow, so it reads as "not filled in yet"
+// and never as the amber. Idle stays a dim filled dot.
 // One semantic theme palette shared by agent and thread rows.
 const STATUS_DOT_CLASSES = {
   working: "bg-transparent",
   error: "bg-destructive",
   success: "bg-success/70",
-  queued: "bg-warning",
+  attention: "bg-warning",
+  held: "box-border border-2 border-muted-foreground/80 bg-transparent",
   idle: "bg-muted-foreground/40",
 };
 
@@ -212,8 +216,8 @@ const INDICATOR_DOT_CLASSES: Record<string, string> = {
   "unread-error": STATUS_DOT_CLASSES.error,
   "queued-failed": STATUS_DOT_CLASSES.error,
   "unread-success": STATUS_DOT_CLASSES.success,
-  "queued-waiting": STATUS_DOT_CLASSES.queued,
-  "waiting-for-input": STATUS_DOT_CLASSES.queued,
+  "queued-waiting": STATUS_DOT_CLASSES.held,
+  "waiting-for-input": STATUS_DOT_CLASSES.attention,
 };
 
 /** Dot classes for one thread's indicator; busy pulses, idle stays dim. */
@@ -222,8 +226,8 @@ function indicatorDotClass(indicator: string): string {
   return INDICATOR_DOT_CLASSES[indicator] ?? STATUS_DOT_CLASSES.idle;
 }
 
-/** Aggregated dot state for an agent row (priority: work > error > unread > queued). */
-type AgentDotState = "working" | "error" | "success" | "queued" | "idle";
+/** Aggregated dot state for an agent row (priority: work > error > unread > attention > held). */
+type AgentDotState = "working" | "error" | "success" | "attention" | "held" | "idle";
 
 const AGENT_DOT_CLASSES: Record<AgentDotState, string> = STATUS_DOT_CLASSES;
 
@@ -231,14 +235,15 @@ const AGENT_DOT_CLASSES: Record<AgentDotState, string> = STATUS_DOT_CLASSES;
 function agentDotState(threads: PluginSidebarThread[]): AgentDotState {
   let state: AgentDotState = "idle";
   const raise = (next: AgentDotState) => {
-    const order: AgentDotState[] = ["idle", "queued", "success", "error", "working"];
+    const order: AgentDotState[] = ["idle", "held", "attention", "success", "error", "working"];
     if (order.indexOf(next) > order.indexOf(state)) state = next;
   };
   for (const thread of threads) {
     if (WORKING_INDICATORS.has(thread.indicator)) return "working";
     if (thread.indicator === "unread-error" || thread.indicator === "queued-failed") raise("error");
     else if (thread.indicator === "unread-success") raise("success");
-    else if (thread.indicator === "queued-waiting" || thread.indicator === "waiting-for-input") raise("queued");
+    else if (thread.indicator === "waiting-for-input") raise("attention");
+    else if (thread.indicator === "queued-waiting") raise("held");
   }
   return state;
 }

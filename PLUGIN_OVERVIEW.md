@@ -18,6 +18,20 @@ The ACP execution host needs Node/npm with `npx` and access to the Letta app-ser
 
 Generated entries run **`npx -y @letta-ai/letta-acp@0.1.10`**, pinned because **0.1.11 has a known stream hang**. Modern versions have not been established as tested; the pin is not a claim that every newer version fails.
 
+## Sidebar status dots
+
+Agent rows and thread rows share one dot palette: busy work is a spinning ring, terminal and waiting states are filled 8px dots, and the one non-filled exception is a message held for a slot.
+
+| Indicator | Dot |
+| --- | --- |
+| `unread-error`, `queued-failed` | filled, `--destructive` |
+| `unread-success` | filled, `--success` at 70% |
+| `waiting-for-input` | filled, `--warning` — the thread asks the user something |
+| `queued-waiting` — a message waiting for a slot, usually the concurrency limit | **hollow** ring in `--muted-foreground`, 2px, same 8px box |
+| idle | filled, `--muted-foreground` at 40% |
+
+A held message is queued work, not a question, so it never borrows the amber that means "answer me"; it keeps the idle hue and only the fill goes away. An agent row aggregates its threads by `idle < held < attention < success < error < working`.
+
 ## Trust and permissions
 
 **Docker socket/daemon access is administrator-level trust.** Use trusted containers and operators. The token is stored **in plaintext in ACP `customAgents` settings**, passed through the process environment, not process argv. Plugin logs and surfaced command errors withhold credentials; this is not encrypted secret storage. Protect settings, backups, and host access.
