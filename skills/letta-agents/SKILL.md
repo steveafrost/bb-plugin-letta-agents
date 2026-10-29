@@ -7,7 +7,7 @@ description: Configure or troubleshoot the Letta Agents sidebar plugin, its loca
 
 This plugin displays local Letta agents in BB's sidebar and synchronizes their providers through the enabled `provider-acp` adapter. It does not provision Letta or expose a `bb letta` command.
 
-Read the plugin README before setup or troubleshooting. Configure `container`, `dockerExecutable`, and `appServerUrl` for the user's installation. New chats additionally require existing `projectId`, `hostId`, and `environmentProviderId` values. Never copy another installation's IDs.
+Read the plugin README before setup or troubleshooting. Configure `container`, `dockerExecutable`, and `appServerUrl` for the user's installation. `acpCommand`, `acpArgs`, and `modelCatalogListArgs` control the generated ACP launch and model-catalog commands; leave them at their defaults unless the user runs a different ACP adapter build, and set `modelCatalogListArgs` to a JSON array only when the adapter exposes a list command. New chats additionally require existing `projectId`, `hostId`, and `environmentProviderId` values. Never copy another installation's IDs.
 
 The plugin backend reads the fixed `/root/.letta/` container layout using local Docker. The ACP execution host needs Node/npm, `npx`, and network access to the app-server. A remote WebSocket endpoint alone does not enable remote roster discovery.
 
