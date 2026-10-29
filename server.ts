@@ -3,7 +3,7 @@ import { delimiter, dirname } from "node:path";
 import { promisify } from "node:util";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { identities, mergeProviders, singleFlight, slug, THREAD_ID_PATTERN, validAgentId, validContainer, validEndpoint, validThreadId, type AgentRecord, type CustomAgent } from "./lib/backend-policy.ts";
+import { identities, mergeProviders, parseStringArray, singleFlight, slug, THREAD_ID_PATTERN, validAcpCommand, validAgentId, validContainer, validEndpoint, validThreadId, type AgentRecord, type CustomAgent } from "./lib/backend-policy.ts";
 const execute = promisify(execFile);
 const agentSchema = z.object({ id: z.string(), name: z.string().min(1), description: z.string().nullable().default(null), avatarVersion: z.number().int().default(1) });
 const rosterSchema = z.object({ agents: z.array(agentSchema).max(500), fetchedAt: z.number() });
@@ -28,6 +28,9 @@ export default async function plugin(bb: BbPluginApi) {
     projectId: { type: "string", label: "Chat project ID", description: "Required. Select an existing BB project using bb project list.", default: "" },
     hostId: { type: "string", label: "Chat host ID", description: "Required. Existing host for the workspace and ACP process.", default: "" },
     environmentProviderId: { type: "string", label: "Workspace provider ID", description: "Required. Installed environment provider; e.g. personal-workspace where installed.", default: "" },
+    acpCommand: { type: "string", label: "ACP agent command", description: "Executable for the Letta ACP agent (name on PATH or absolute path); also used for model listing.", default: "npx" },
+    acpArgs: { type: "string", label: "ACP agent arguments", description: "JSON array of strings passed to the ACP agent command.", default: '["-y","@letta-ai/letta-acp@0.1.10"]' },
+    modelCatalogListArgs: { type: "string", label: "Model catalog arguments", description: "JSON array of strings, appended to the ACP command to list models. Empty disables the static catalog and probes a live ACP session instead.", default: "[]" },
     allowUnrestricted: { type: "boolean", label: "Allow unrestricted agent tools", description: "Opt-in: grants full BB permissions and unrestricted Letta tool execution. Off uses standard approvals. Existing sessions keep their current permissions.", default: false },
     showAgentsInProviderPicker: { type: "boolean", label: "Show agents in provider picker", description: "UI-only. Providers remain enabled for the Bots sidebar.", default: false },
   });
@@ -78,7 +81,16 @@ export default async function plugin(bb: BbPluginApi) {
       const previousSource = await bb.storage.kv.get<string>("provider-source:v2");
       if (previousSource && previousSource !== source) throw new Error("Provider source differs; explicit migration required.");
       const ids = identities(agents, current, saved, config.appServerUrl);
-      const desired = agents.map(agent => ({ id: ids[agent.id]!, displayName: agent.name, command: "npx", args: ["-y", "@letta-ai/letta-acp@0.1.10"], env: { LETTA_ACP_BACKEND: "remote", LETTA_APP_SERVER_URL: config.appServerUrl, LETTA_AGENT_ID: agent.id, LETTA_APP_SERVER_TOKEN: token, LETTA_ACP_PERMISSION_MODE: config.allowUnrestricted ? "unrestricted" : "standard" } }));
+      // Parsed per sync: a malformed setting must fail synchronization with a safe
+      // message rather than write a provider entry the ACP adapter would reject.
+      const command = validAcpCommand(config.acpCommand);
+      const args = parseStringArray(config.acpArgs, "ACP agent arguments");
+      const listArgs = parseStringArray(config.modelCatalogListArgs, "model catalog arguments");
+      // provider-acp requires primaryModels in modelCli, and a modelCli whose
+      // listArgs is empty is dropped, which silently unregisters the provider.
+      // An explicit undefined (dropped by JSON.stringify) clears a stale entry.
+      const modelCli: { listArgs: string[]; primaryModels: string[] } | undefined = listArgs.length > 0 ? { listArgs, primaryModels: [] } : undefined;
+      const desired = agents.map(agent => ({ id: ids[agent.id]!, displayName: agent.name, command, args, modelCli, env: { LETTA_ACP_BACKEND: "remote", LETTA_APP_SERVER_URL: config.appServerUrl, LETTA_AGENT_ID: agent.id, LETTA_APP_SERVER_TOKEN: token, LETTA_ACP_PERMISSION_MODE: config.allowUnrestricted ? "unrestricted" : "standard" } }));
       const owned = new Set(current.filter(entry => entry.id.startsWith("letta-") && entry.env?.LETTA_ACP_BACKEND === "remote" && agents.some(agent => agent.id === entry.env?.LETTA_AGENT_ID)).map(entry => entry.id));
       // Absent providers remain untouched, including permissions; explicit cleanup
       // is required for retained unrestricted entries (see README).
@@ -113,7 +125,7 @@ export default async function plugin(bb: BbPluginApi) {
   // Never surface arbitrary SDK/subprocess exception text: it may include settings.
   function safeError(error: unknown): string {
     const message = error instanceof Error ? error.message : "";
-    const safePrefixes = ["Letta container command failed.", "Letta token is empty", "Settings changed;", "ACP settings changed", "Unable to update ACP settings.", "Provider identity collision", "Provider identity differs;", "Provider ID belongs", "Refusing to overwrite", "Duplicate agent ID", "Duplicate Letta providers;", "Provider endpoint differs;", "Provider source differs;", "Invalid Letta", "Invalid Docker", "Use a ws://", "Configure a Docker"];
+    const safePrefixes = ["Letta container command failed.", "Letta token is empty", "Settings changed;", "ACP settings changed", "Unable to update ACP settings.", "Provider identity collision", "Provider identity differs;", "Provider ID belongs", "Refusing to overwrite", "Duplicate agent ID", "Duplicate Letta providers;", "Provider endpoint differs;", "Provider source differs;", "Invalid Letta", "Invalid Docker", "Invalid ACP", "Use a ws://", "Configure a Docker"];
     return safePrefixes.some(prefix => message.startsWith(prefix)) ? message : "Letta synchronization failed. Check the ACP adapter, endpoint configuration and roster format. Details withheld.";
   }
   async function roster(): Promise<Roster> {
@@ -251,7 +263,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.background.schedule("roster-refresh", "*/5 * * * *", async () => { try { await refresh("sync"); } catch { /* stale roster retained; safe warning already logged */ } });
   settings.onChange((next, prev) => {
-    if (["container", "dockerExecutable", "appServerUrl", "allowUnrestricted", "projectId", "hostId", "environmentProviderId"].some(key => next[key as keyof typeof next] !== prev[key as keyof typeof prev])) {
+    if (["container", "dockerExecutable", "appServerUrl", "acpCommand", "acpArgs", "modelCatalogListArgs", "allowUnrestricted", "projectId", "hostId", "environmentProviderId"].some(key => next[key as keyof typeof next] !== prev[key as keyof typeof prev])) {
       generation++; ready = false; lastSync = 0;
       const requested = generation;
       void refresh("sync").catch(() => {}).finally(() => {

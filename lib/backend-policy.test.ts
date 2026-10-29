@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { identities, mergeProviders, singleFlight, stableId, validAgentId, validContainer, validEndpoint } from "./backend-policy.ts";
+import { identities, mergeProviders, parseStringArray, singleFlight, stableId, validAcpCommand, validAgentId, validContainer, validEndpoint } from "./backend-policy.ts";
 const agent = (id: string, name = "same") => ({ id, name, description: null, avatarVersion: 1 });
 const legacy = { id: "letta-old", env: { LETTA_AGENT_ID: "agent-1", LETTA_ACP_BACKEND: "remote" } };
 test("container and agent command arguments reject shell syntax and options", () => {
@@ -65,4 +65,26 @@ test("updated providers retain opaque settings and environment fields", () => {
   const original = { ...legacy, opaque: { keep: true }, env: { ...legacy.env, CUSTOM: "keep" } };
   const merged = mergeProviders([original], [{ ...legacy, displayName: "New" }], new Set([legacy.id]));
   assert.deepEqual(merged[0], { ...original, displayName: "New" });
+});
+
+test("ACP argument settings parse only as JSON arrays of usable strings", () => {
+  assert.deepEqual(parseStringArray("", "ACP agent arguments"), []);
+  assert.deepEqual(parseStringArray("   ", "ACP agent arguments"), []);
+  assert.deepEqual(parseStringArray('["-y","@letta-ai/letta-acp@0.1.10"]', "ACP agent arguments"), ["-y", "@letta-ai/letta-acp@0.1.10"]);
+  // Not JSON, not an array, or an array holding anything unusable all fail closed
+  // with the same stable prefix, so safeError can surface it without leaking.
+  const invalid = ["npx", "{}", '"a"', "[null]", "[1]", '[""]', '["a\\u0000b"]', '["a\\nb"]', "["];
+  for (const value of invalid) {
+    assert.throws(() => parseStringArray(value, "ACP agent arguments"), (error: Error) => {
+      assert.ok(error.message.startsWith("Invalid ACP setting: ACP agent arguments "), `unexpected message: ${error.message}`);
+      return true;
+    });
+  }
+});
+test("ACP command rejects empty values and control characters", () => {
+  assert.equal(validAcpCommand(" npx "), "npx");
+  assert.equal(validAcpCommand("/usr/local/bin/letta-acp"), "/usr/local/bin/letta-acp");
+  for (const value of ["", "   ", "npx\nrm -rf /", "npx\u0000"]) {
+    assert.throws(() => validAcpCommand(value), (error: Error) => error.message.startsWith("Invalid ACP setting: the ACP agent command "));
+  }
 });

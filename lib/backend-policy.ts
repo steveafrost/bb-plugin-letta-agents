@@ -32,6 +32,30 @@ export function validEndpoint(value: string): string {
   if (!["ws:", "wss:"].includes(url.protocol) || url.username || url.password || url.hash || url.search) throw new Error("Use a ws:// or wss:// URL without credentials, query or fragment.");
   return value;
 }
+/**
+ * A JSON-array-of-strings setting, parsed at the boundary so a malformed value
+ * fails synchronization with a stable, non-secret message instead of reaching
+ * the ACP provider entry as arbitrary JSON. An empty or blank value means "no
+ * arguments" and yields an empty array. The label is a static call-site string,
+ * never a setting value, so the message cannot carry credentials.
+ */
+export function parseStringArray(value: string, label: string): string[] {
+  const text = value.trim();
+  if (!text) return [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { throw new Error(`Invalid ACP setting: ${label} is not valid JSON.`); }
+  if (!Array.isArray(parsed)) throw new Error(`Invalid ACP setting: ${label} must be a JSON array of strings.`);
+  for (const item of parsed) {
+    if (typeof item !== "string" || !item || /[\u0000-\u001f\u007f]/.test(item)) throw new Error(`Invalid ACP setting: ${label} must be a JSON array of non-empty strings without control characters.`);
+  }
+  return parsed as string[];
+}
+/** The ACP launch executable is an executable name or path, never argv or shell source. */
+export function validAcpCommand(value: string): string {
+  const text = value.trim();
+  if (!text || /[\u0000-\u001f\u007f]/.test(text)) throw new Error("Invalid ACP setting: the ACP agent command must be an executable name or path without control characters.");
+  return text;
+}
 /** Preserve established providers by immutable backend ID, never by display name alone. */
 export function identities(agents: AgentRecord[], current: CustomAgent[], saved: Record<string, string>, endpoint?: string): Record<string, string> {
   const result: Record<string, string> = Object.create(null);

@@ -21,7 +21,7 @@ async function within<T>(promise: Promise<T>): Promise<T> {
   } finally { clearTimeout(timer); }
 }
 
-async function successfulHost() {
+async function successfulHost(overrides: Record<string, unknown> = {}) {
   const directory = await mkdtemp(join(tmpdir(), "letta-server-test-"));
   const executable = join(directory, "fixture.cjs");
   // This is a Node fixture, never Docker. Accept only the two fixed commands
@@ -38,7 +38,7 @@ if (args[2] === "node" && args[3] === "-e") {
   let customAgents = "[]";
   const host = createFakePluginHost({
     pluginId: "letta-agents",
-    settings: { dockerExecutable: executable, container: "letta", projectId: "test-project", hostId: "test-host", environmentProviderId: "test-workspace" },
+    settings: { dockerExecutable: executable, container: "letta", projectId: "test-project", hostId: "test-host", environmentProviderId: "test-workspace", ...overrides },
     sdk: {
       plugins: {
         getSettings: async () => ({ values: { customAgents } }),
@@ -342,3 +342,53 @@ test("cold subprocess failure rejects safely, preserves ACP configuration and ne
     assert.deepEqual(await harness.behavior.callRpc("avatar_get", { agentId: "../secret", version: 1 }), {url:null});
   } finally { await harness.lifecycle.dispose(); }
 });
+
+// The generated provider entry is the only thing that makes the model catalog
+// durable: provider-acp drops a modelCli with empty listArgs (unregistering the
+// provider) and probes a live ACP session instead, stranding an empty
+// conversation on every catalog refresh. Defaults must therefore match the
+// historical hardcoded launch command exactly, with no modelCli at all.
+test("default ACP settings emit the historical launch command and no model catalog", async () => {
+  const host = await successfulHost();
+  try {
+    await plugin(host.bb);
+    await host.harness.behavior.runSchedule("roster-refresh");
+    const [entry] = JSON.parse(host.readAdapter().values.customAgents);
+    assert.equal(entry.command, "npx");
+    assert.deepEqual(entry.args, ["-y", "@letta-ai/letta-acp@0.1.10"]);
+    assert.equal("modelCli" in entry, false);
+    assert.equal(entry.env.LETTA_ACP_BACKEND, "remote");
+    assert.equal(entry.env.LETTA_APP_SERVER_TOKEN, "invented-test-token");
+  } finally { await host.dispose(); }
+});
+
+test("configured ACP command, arguments and model catalog land in the synchronized provider entry", async () => {
+  const host = await successfulHost({ acpCommand: "  /opt/letta/bin/letta-acp  ", acpArgs: '["--profile","local"]', modelCatalogListArgs: '["models","--json"]' });
+  try {
+    await plugin(host.bb);
+    await host.harness.behavior.runSchedule("roster-refresh");
+    const [entry] = JSON.parse(host.readAdapter().values.customAgents);
+    assert.equal(entry.command, "/opt/letta/bin/letta-acp");
+    assert.deepEqual(entry.args, ["--profile", "local"]);
+    // provider-acp rejects a modelCli without primaryModels, so [] is required.
+    assert.deepEqual(entry.modelCli, { listArgs: ["models", "--json"], primaryModels: [] });
+  } finally { await host.dispose(); }
+});
+
+for (const [setting, value] of [["acpArgs", "not-json"], ["acpArgs", "[1]"], ["modelCatalogListArgs", "{}"], ["modelCatalogListArgs", '[""]'], ["acpCommand", "  "]] as const) {
+  test(`invalid ${setting} ${JSON.stringify(value)} fails synchronization without writing the adapter or leaking the token`, async () => {
+    const host = await successfulHost({ [setting]: value });
+    try {
+      await plugin(host.bb);
+      await host.harness.behavior.runSchedule("roster-refresh");
+      await assert.rejects(host.harness.behavior.callRpc("agents_list", null), (error: Error) => {
+        assert.ok(error.message.startsWith("Invalid ACP setting: "), `unexpected message: ${error.message}`);
+        assert.equal(error.message.includes("invented-test-token"), false);
+        return true;
+      });
+      assert.equal(host.harness.inspection.sdk.callsTo("plugins.updateSettings").length, 0);
+      assert.equal(host.harness.inspection.logEntries.some(entry => entry.level === "warn" && entry.message.startsWith("Invalid ACP setting: ")), true);
+      assert.equal(host.harness.inspection.logEntries.some(entry => entry.message.includes("invented-test-token")), false);
+    } finally { await host.dispose(); }
+  });
+}
