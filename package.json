@@ -12,7 +12,7 @@
     "url": "https://github.com/steveafrost/bb-plugin-letta-agents/issues"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test lib/*.test.ts server.test.ts",
+    "test": "node --experimental-strip-types --test lib/*.test.ts server.test.ts scripts/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

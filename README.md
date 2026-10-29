@@ -100,6 +100,49 @@ There is no upstream supported API here for hiding an enabled provider only from
 
 When an unrelated provider has the same display name, hiding **fails open** so the unrelated entry is not hidden; the Letta entry may remain visible too. Enable `showAgentsInProviderPicker` to bypass the workaround.
 
+## Maintenance: purge retained empty conversations
+
+Letta has **no supported way to delete a conversation**. `DELETE /v1/conversations/<id>` returns 404, the SDK's conversations client only exposes `update({ archived: true })`, and `conversations.list()` still returns archived records. What accumulates is therefore never reclaimed by the app server: conversations that never received a message stay on disk under `/root/.letta/lc-local-backend/conversations/<base64-id>/` as a `conversation.json` plus an empty or absent `messages.jsonl`. Model-catalog probes create them in bursts.
+
+`scripts/purge-empty-conversations.mjs` is an **opt-in, offline** cleanup for exactly those directories. Whether to run it, and when, is the operator's decision; it is not part of the plugin's runtime and nothing invokes it automatically.
+
+```sh
+# Dry run (default): report what would be removed. Deletes nothing.
+node scripts/purge-empty-conversations.mjs
+
+# Machine-readable, same dry run.
+node scripts/purge-empty-conversations.mjs --json
+
+# Delete, after copying metadata into a local backup directory first.
+node scripts/purge-empty-conversations.mjs --apply --backup-dir ./letta-empty-conversations-$(date +%Y%m%d)
+```
+
+The dry run prints a JSON summary when `--json` is passed:
+
+```json
+{"container":"letta","total":342,"withMessages":263,"empty":79,"archivedEmpty":28,"selected":79}
+```
+
+`total` counts conversation directories, `withMessages` those with at least one message, `empty` those with none, `archivedEmpty` the archived subset of `empty`, and `selected` what this invocation would remove.
+
+**What it removes.** Only a conversation directory whose `messages.jsonl` is missing or empty. By default it selects every such directory, archived or not, for every agent — both are empty, and archiving does not reclaim anything. Use `--exclude-archived` to narrow that to non-archived conversations, or `--agent <letta-agent-id>` to limit scope to one agent; the two combine. `--include-archived` states the default explicitly.
+
+**What it does not touch.** No database access: it never opens the Letta SQLite database, executes no SQL, and runs no query. Message content is never read, modified, or deleted — a directory with any message is never selected, and deletion re-verifies the message count inside the container immediately before removing anything. Agents, agent state, and non-empty conversations are untouched. It requires Docker access to the container, so the same [security and permissions](#security-and-permissions) notes apply.
+
+**Backup.** `--apply` requires `--backup-dir`. Before any removal, each selected `conversation.json` is copied into that directory, along with `manifest.json` and `system-prompt.json` when present, plus a `backup-index.json` recording the container, root, timestamp, and copied directory names. The absolute backup path is printed. `--apply` without `--backup-dir` refuses and deletes nothing.
+
+**Deletion mechanics.** Removal runs inside the container via the configured Docker executable and container name (`--docker`, `--container`; defaults `docker` and `letta`, matching the plugin settings) with `fs.rmSync(dir, {recursive: true})` on one conversation directory at a time. Each path must resolve to a direct child of the conversations root and must re-parse a `conversation.json` with zero messages; otherwise it is skipped and reported. There is no glob that could match a parent directory.
+
+**Exit codes.** `0` on success, including a dry run. `1` on refusal or error, with a message naming the failing condition — a missing `--backup-dir`, an invalid container or agent id, or unreadable container state. A skip during deletion is also reported on stderr and exits `1`.
+
+The fixture tests use a fake `docker` executable and a temporary directory; they are deterministic, network-free, and never touch a real container:
+
+```sh
+node --test scripts/purge-empty-conversations.test.mjs
+```
+
+**Warning: deleted conversations cannot be recovered from Letta.** The backup holds only conversation metadata, not the conversations themselves, and there is no undelete: Letta has no supported delete, so it has no supported restore either. Review the dry-run count and the selected scope before passing `--apply`.
+
 ## Current limits and verification status
 
 This implementation is tied to the local Docker layout, the adapter's custom-agent settings, experimental BB sidebar APIs, and current picker markup. It is not a general Letta Cloud connector. It does not automatically remove retired providers or migrate existing thread permissions.
