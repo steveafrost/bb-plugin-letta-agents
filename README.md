@@ -147,7 +147,7 @@ node --test scripts/purge-empty-conversations.test.mjs
 
 This implementation is tied to the local Docker layout, the adapter's custom-agent settings, experimental BB sidebar APIs, and current picker markup. It is not a general Letta Cloud connector. It does not automatically remove retired providers or migrate existing thread permissions.
 
-Release checks passed 54 automated tests, TypeScript checking, and the BB plugin build. Basic saved-chat navigation was checked in the running app; the maintainer confirmed the remaining live workflow and visual checks. These are local results, not a compatibility guarantee for other installations. The adapter remains pinned to 0.1.10; other versions are unverified.
+Release checks passed 66 automated tests, TypeScript checking, and the BB plugin build. Basic saved-chat navigation was checked in the running app; the maintainer confirmed the remaining live workflow and visual checks. These are local results, not a compatibility guarantee for other installations. The adapter remains pinned to 0.1.10; other versions are unverified.
 
 ## Development and reporting issues
 
