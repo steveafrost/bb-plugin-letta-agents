@@ -68,13 +68,17 @@ Options:
                              refusal, not an empty result.
   --help                     Print this help and exit 0.
 
-Defaults: every conversation directory whose messages.jsonl is missing or
-empty is selected, archived or not, for every agent.
+Selection: a directory is only ever selected when it has a parsable
+conversation.json AND zero messages, archived or not, for every agent. A
+message-free directory whose conversation.json is missing or unparsable cannot
+be identified safely: it is counted as metadataMissing, is never selected, and
+is left on disk.
 
 What is removed: only <root>/<conversation-dir>/ itself, for directories that
 re-verify as message-free inside the container immediately before removal.
 What is not touched: the Letta database, message content in non-empty
-conversations, agents, and message-free directories that --agent or
+conversations, agents, message-free directories without parsable metadata
+(metadataMissing), and message-free directories that --agent or
 --exclude-archived excluded.
 
 Exit codes: 0 on success (including a dry run), 1 on refusal or error.
@@ -232,6 +236,9 @@ function summarise(entries, options) {
   const withMetadata = entries.filter(entry => entry.hasMetadata);
   const withMessages = entries.filter(entry => entry.messages > 0).length;
   const empty = withMetadata.filter(entry => entry.messages === 0);
+  // Message-free directories cannot be identified without a parsable
+  // conversation.json, so they are reported here and never selected.
+  const metadataMissing = entries.filter(entry => entry.hasMetadata === false && entry.messages === 0).length;
   const archivedEmpty = empty.filter(entry => entry.archived === true).length;
   const selected = empty.filter(entry => {
     if (options.agent !== null) {
@@ -248,6 +255,7 @@ function summarise(entries, options) {
       withMessages,
       empty: empty.length,
       archivedEmpty,
+      metadataMissing,
       selected: selected.length,
     },
     selected,
@@ -309,7 +317,7 @@ async function main() {
     else {
       process.stdout.write([
         `Container: ${summary.container} (${summary.conversationsRoot})`,
-        `Conversations: ${summary.total} total, ${summary.empty} empty (${summary.archivedEmpty} archived), ${summary.withMessages} with messages`,
+        `Conversations: ${summary.total} total, ${summary.empty} empty (${summary.archivedEmpty} archived), ${summary.metadataMissing} without parsable conversation.json (left on disk), ${summary.withMessages} with messages`,
         `Selected for deletion: ${summary.selected}`,
         "Dry run: nothing was deleted. Re-run with --apply --backup-dir <dir> to delete.",
         "",
@@ -347,7 +355,7 @@ async function main() {
   else {
     process.stdout.write([
       `Container: ${summary.container} (${summary.conversationsRoot})`,
-      `Conversations: ${summary.total} total, ${summary.empty} empty (${summary.archivedEmpty} archived), ${summary.withMessages} with messages`,
+      `Conversations: ${summary.total} total, ${summary.empty} empty (${summary.archivedEmpty} archived), ${summary.metadataMissing} without parsable conversation.json (left on disk), ${summary.withMessages} with messages`,
       `Selected: ${summary.selected}`,
       `Backup: ${backupPath}`,
       `Deleted: ${deleted}`,
