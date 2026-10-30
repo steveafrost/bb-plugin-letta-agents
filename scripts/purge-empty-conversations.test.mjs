@@ -31,7 +31,7 @@ process.stdout.write(result.stdout);
   return { directory, executable, log };
 }
 
-async function fixture({ executable, root }) {
+async function fixture({ executable, root, withoutMetadata = false }) {
   const empty = join(root, "Y29udmVyc2F0aW9uOmVtcHR5");
   const messaged = join(root, "Y29udmVyc2F0aW9uOm1lc3NhZ2Vk");
   const archived = join(root, "Y29udmVyc2F0aW9uOmFyY2hpdmVk");
@@ -47,12 +47,24 @@ async function fixture({ executable, root }) {
   await writeFile(join(messaged, "messages.jsonl"), `${JSON.stringify({ role: "user", content: "kept" })}\n`);
   await writeFile(join(archived, "conversation.json"), meta("archived", { archived: true }));
 
+  const missing = join(root, "Y29udmVyc2F0aW9uOm5vbWV0YWRhdGE");
+  const unparsable = join(root, "Y29udmVyc2F0aW9uOmJhZG1ldGE");
+  if (withoutMetadata) {
+    // Message-free, but no conversation.json at all.
+    await mkdir(missing, { recursive: true });
+    await writeFile(join(missing, "messages.jsonl"), "");
+    // Message-free with an unparsable conversation.json.
+    await mkdir(unparsable, { recursive: true });
+    await writeFile(join(unparsable, "conversation.json"), "{not json");
+    await writeFile(join(unparsable, "messages.jsonl"), "");
+  }
+
   const run = (...flags) => execute(
     process.execPath,
     [join(import.meta.dirname, "purge-empty-conversations.mjs"), "--docker", executable, "--container", "letta", ...flags],
     { encoding: "utf8", env: { ...process.env, PURGE_FIXTURE_ROOT: root } },
   );
-  return { run, empty, messaged, archived };
+  return { run, empty, messaged, archived, missing, unparsable };
 }
 
 // Same fixture run, but with the invocation log enabled so a test can assert on
@@ -78,6 +90,7 @@ test("dry run reports the split, selects only message-free conversations, and mu
       withMessages: 1,
       empty: 2,
       archivedEmpty: 1,
+      metadataMissing: 0,
       selected: 2,
     });
     // Nothing removed, including the archived empty conversation.
@@ -133,6 +146,7 @@ test("--conversations-root targets a non-default layout for both the scan and th
       withMessages: 1,
       empty: 2,
       archivedEmpty: 1,
+      metadataMissing: 0,
       selected: 2,
     });
 
@@ -189,6 +203,44 @@ test("an invalid --conversations-root exits 1 before any container call", async 
     // The fake docker was never invoked: validation precedes every container call.
     await assert.rejects(readFile(docker.log, "utf8"), error => error.code === "ENOENT");
     assert.equal((await readdir(root)).length, 3);
+  } finally {
+    await rm(docker.directory, { recursive: true, force: true });
+  }
+});
+
+test("message-free directories without parsable conversation.json are reported, never selected, and survive --apply", async () => {
+  const docker = await fakeDocker();
+  try {
+    const root = join(docker.directory, "conversations");
+    const backup = join(docker.directory, "backup");
+    const { run, missing, unparsable } = await fixture({ executable: docker.executable, root, withoutMetadata: true });
+
+    // Selection is by message count AND parsable metadata: the two unknown
+    // directories are counted as metadataMissing instead of being selected.
+    const { stdout: dryRunOutput } = await run("--json");
+    const summary = JSON.parse(dryRunOutput);
+    assert.equal(summary.total, 5);
+    assert.equal(summary.empty, 2);
+    assert.equal(summary.metadataMissing, 2);
+    assert.equal(summary.selected, 2);
+
+    const { stdout: applyOutput } = await run("--json", "--apply", "--backup-dir", backup);
+    const result = JSON.parse(applyOutput);
+    // Same field, same meaning, in the --apply result object.
+    assert.equal(result.metadataMissing, 2);
+    assert.equal(result.deleted, 2);
+    assert.equal(result.skipped, 0);
+
+    // Both survive on disk: the script cannot identify them safely.
+    await assert.doesNotReject(stat(missing), /./);
+    await assert.doesNotReject(stat(unparsable), /./);
+    assert.deepEqual((await readdir(root)).sort(), [
+      "Y29udmVyc2F0aW9uOm1lc3NhZ2Vk",
+      "Y29udmVyc2F0aW9uOm5vbWV0YWRhdGE",
+      "Y29udmVyc2F0aW9uOmJhZG1ldGE",
+    ]);
+    // They were never backed up either, because they were never selected.
+    assert.deepEqual((await readdir(backup)).sort(), ["Y29udmVyc2F0aW9uOmFyY2hpdmVk", "Y29udmVyc2F0aW9uOmVtcHR5", "backup-index.json"]);
   } finally {
     await rm(docker.directory, { recursive: true, force: true });
   }
