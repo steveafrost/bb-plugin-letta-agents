@@ -120,10 +120,12 @@ node scripts/purge-empty-conversations.mjs --apply --backup-dir ./letta-empty-co
 The dry run prints a JSON summary when `--json` is passed:
 
 ```json
-{"container":"letta","total":342,"withMessages":263,"empty":79,"archivedEmpty":28,"selected":79}
+{"container":"letta","conversationsRoot":"/root/.letta/lc-local-backend/conversations","total":342,"withMessages":263,"empty":79,"archivedEmpty":28,"selected":79}
 ```
 
-`total` counts conversation directories, `withMessages` those with at least one message, `empty` those with none, `archivedEmpty` the archived subset of `empty`, and `selected` what this invocation would remove.
+`conversationsRoot` is the directory that was scanned, `total` counts conversation directories, `withMessages` those with at least one message, `empty` those with none, `archivedEmpty` the archived subset of `empty`, and `selected` what this invocation would remove.
+
+**Conversations root.** `--conversations-root <absolute-path>` overrides the scanned directory; the default is the local letta-code layout, `/root/.letta/lc-local-backend/conversations`. Use it when the backend keeps conversations somewhere else in the container. The value must be an absolute path with no `.` or `..` segment and no trailing slash; anything else is refused before a container call is made. If the chosen root does not exist as a directory in the container, the script names that exact path and the `--conversations-root` flag and exits `1` with nothing deleted — it does not report zero conversations. The same root is used by the scan, the backup readback, the deletion, and the `backup-index.json` record, and every path still has to resolve to a direct child of it.
 
 **What it removes.** Only a conversation directory whose `messages.jsonl` is missing or empty. By default it selects every such directory, archived or not, for every agent — both are empty, and archiving does not reclaim anything. Use `--exclude-archived` to narrow that to non-archived conversations, or `--agent <letta-agent-id>` to limit scope to one agent; the two combine. `--include-archived` states the default explicitly.
 
@@ -133,7 +135,7 @@ The dry run prints a JSON summary when `--json` is passed:
 
 **Deletion mechanics.** Removal runs inside the container via the configured Docker executable and container name (`--docker`, `--container`; defaults `docker` and `letta`, matching the plugin settings) with `fs.rmSync(dir, {recursive: true})` on one conversation directory at a time. Each path must resolve to a direct child of the conversations root and must re-parse a `conversation.json` with zero messages; otherwise it is skipped and reported. There is no glob that could match a parent directory.
 
-**Exit codes.** `0` on success, including a dry run. `1` on refusal or error, with a message naming the failing condition — a missing `--backup-dir`, an invalid container or agent id, or unreadable container state. A skip during deletion is also reported on stderr and exits `1`.
+**Exit codes.** `0` on success, including a dry run. `1` on refusal or error, with a message naming the failing condition — a missing `--backup-dir`, an invalid container or agent id, an invalid or absent `--conversations-root`, or unreadable container state. A skip during deletion is also reported on stderr and exits `1`.
 
 The fixture tests use a fake `docker` executable and a temporary directory; they are deterministic, network-free, and never touch a real container:
 

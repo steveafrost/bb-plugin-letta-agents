@@ -14,13 +14,13 @@
 
 import { execFile } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 
-/** Conversations root inside the Letta container (local letta-code layout). */
+/** Default conversations root inside the Letta container (local letta-code layout). */
 export const CONVERSATIONS_ROOT = "/root/.letta/lc-local-backend/conversations";
 
 // Same shape the plugin's backend policy accepts for a container name.
@@ -59,6 +59,13 @@ Options:
   --docker <executable>      Docker executable name on PATH or absolute path.
                              Default: docker
   --container <name>         Letta container name. Default: letta
+  --conversations-root <path>
+                             Absolute conversations directory inside the
+                             container. Default: ${CONVERSATIONS_ROOT}
+                             Refused if the path is not absolute, contains a
+                             '..' (or '.') segment, or ends with a slash.
+                             A root that does not exist in the container is a
+                             refusal, not an empty result.
   --help                     Print this help and exit 0.
 
 Defaults: every conversation directory whose messages.jsonl is missing or
@@ -81,7 +88,8 @@ function fail(message) {
 function parseArguments(argv) {
   const options = {
     json: false, apply: false, backupDir: null, agent: null,
-    includeArchived: true, docker: "docker", container: "letta", help: false,
+    includeArchived: true, docker: "docker", container: "letta",
+    conversationsRoot: CONVERSATIONS_ROOT, help: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
@@ -102,11 +110,29 @@ function parseArguments(argv) {
       case "--exclude-archived": options.includeArchived = false; break;
       case "--docker": options.docker = value(); break;
       case "--container": options.container = value(); break;
+      case "--conversations-root": options.conversationsRoot = value(); break;
       case "--help": case "-h": options.help = true; break;
       default: fail(`unknown argument ${flag}. Use --help for the accepted flags.`);
     }
   }
   return options;
+}
+
+// The conversations root is passed to the in-container scripts as a JSON string
+// literal, never interpolated into a shell command. Validation is still strict:
+// an absolute path with no traversal, so a relative or climbing path is refused
+// by name instead of surfacing as an obscure container error.
+function validateConversationsRoot(value) {
+  const invalid = reason => fail(`invalid --conversations-root ${JSON.stringify(value)}: ${reason}. No conversation was deleted.`);
+  if (value === "") invalid("must not be empty");
+  if (/[\r\n\0]/.test(value)) invalid("must not contain control characters");
+  if (value !== value.trim()) invalid("must not have leading or trailing whitespace");
+  if (!isAbsolute(value)) invalid("must be an absolute path");
+  if (value.length > 1 && value.endsWith("/")) invalid("must not end with a slash");
+  const segments = value.split("/").slice(1);
+  if (segments.some(segment => segment === "..")) invalid("must not contain a '..' segment");
+  if (segments.some(segment => segment === ".")) invalid("must not contain a '.' segment");
+  return value;
 }
 
 function validate(options) {
@@ -118,23 +144,37 @@ function validate(options) {
   if (options.agent !== null) {
     if (!AGENT_PATTERN.test(options.agent)) fail(`invalid Letta agent id: ${options.agent}`);
   }
+  const conversationsRoot = validateConversationsRoot(options.conversationsRoot);
   if (options.apply && !options.backupDir) {
     fail("--apply requires --backup-dir; no conversation was deleted.");
   }
-  return docker;
+  return { docker, conversationsRoot };
 }
 
 async function runInContainer(docker, container, script, args = []) {
   const { stdout } = await execute(docker, ["exec", container, "node", "-e", script, ...args], {
     timeout: 120_000, maxBuffer: 16 * 1024 * 1024, encoding: "utf8",
   });
-  return JSON.parse(stdout);
+  // Unparsable container output is a clear error naming the container, not a
+  // raw SyntaxError. Callers surface it as a refusal.
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw new Error(`unexpected non-JSON output from command in container ${container}.`);
+  }
 }
+
+// Report whether the chosen root exists as a directory. Run before the scan so a
+// wrong --conversations-root is a refusal, never an empty or errored result.
+const rootProbeScript = root => `const fs=require("fs"),root=${JSON.stringify(root)};
+let exists=false,isDirectory=false;
+try{exists=true;isDirectory=fs.statSync(root).isDirectory();}catch{}
+process.stdout.write(JSON.stringify({root,exists,isDirectory}));`;
 
 // Enumerate every conversation directory. Message counts come from the file
 // itself, so a directory with any message is classified as non-empty even when
 // its conversation.json is missing or unparsable.
-const SCAN_SCRIPT = `const fs=require("fs"),root=${JSON.stringify(CONVERSATIONS_ROOT)};
+const scanScript = root => `const fs=require("fs"),root=${JSON.stringify(root)};
 const entries=[];
 for(const name of fs.readdirSync(root)){
   const dir=root+"/"+name;
@@ -149,8 +189,8 @@ process.stdout.write(JSON.stringify(entries));`;
 
 // Read the backup payload as base64, only from names that resolve to a direct
 // child of the conversations root. No message file is read.
-const READBACK_SCRIPT = `const fs=require("fs"),path=require("path");
-const root=${JSON.stringify(CONVERSATIONS_ROOT)},rootReal=fs.realpathSync(root);
+const readbackScript = root => `const fs=require("fs"),path=require("path");
+const root=${JSON.stringify(root)},rootReal=fs.realpathSync(root);
 const names=${JSON.stringify(BACKED_UP_FILES)};
 const out={};
 for(const name of process.argv.slice(1)){
@@ -168,8 +208,8 @@ process.stdout.write(JSON.stringify(out));`;
 // Deletion re-verifies every precondition inside the container: an exact
 // direct child of the root, a parsed conversation.json, and zero messages.
 // No SQL, no glob, and no directory outside the selected one is touched.
-const DELETE_SCRIPT = `const fs=require("fs"),path=require("path");
-const root=${JSON.stringify(CONVERSATIONS_ROOT)},rootReal=fs.realpathSync(root);
+const deleteScript = root => `const fs=require("fs"),path=require("path");
+const root=${JSON.stringify(root)},rootReal=fs.realpathSync(root);
 const results=[];
 for(const name of process.argv.slice(1)){
   if(!/${DIRECTORY_SOURCE}/.test(name)){results.push({name,deleted:false,reason:"invalid-directory-name"});continue;}
@@ -203,6 +243,7 @@ function summarise(entries, options) {
   return {
     summary: {
       container: options.container,
+      conversationsRoot: options.conversationsRoot,
       total: entries.length,
       withMessages,
       empty: empty.length,
@@ -213,7 +254,7 @@ function summarise(entries, options) {
   };
 }
 
-async function writeBackup(backupDir, container, payload) {
+async function writeBackup(backupDir, container, conversationsRoot, payload) {
   const absolute = resolve(backupDir);
   const names = Object.keys(payload);
   for (const name of names) {
@@ -225,7 +266,7 @@ async function writeBackup(backupDir, container, payload) {
   }
   await writeFile(join(absolute, "backup-index.json"), `${JSON.stringify({
     container,
-    conversationsRoot: CONVERSATIONS_ROOT,
+    conversationsRoot,
     createdAt: new Date().toISOString(),
     directories: names,
   }, null, 2)}\n`);
@@ -238,13 +279,25 @@ async function main() {
     process.stdout.write(USAGE);
     return 0;
   }
-  const docker = validate(options);
+  const { docker, conversationsRoot } = validate(options);
+
+  // Probe the root first: an absent --conversations-root is a refusal that names
+  // the path, never a silent zero-conversation result or a raw container error.
+  let probe;
+  try {
+    probe = await runInContainer(docker, options.container, rootProbeScript(conversationsRoot));
+  } catch (error) {
+    fail(`could not inspect ${conversationsRoot} in container ${options.container} via ${docker} (${error.code ?? "error"}). Check Docker, the container name, and container access.`);
+  }
+  if (!probe || probe.exists !== true || probe.isDirectory !== true) {
+    fail(`conversations root ${conversationsRoot} does not exist as a directory in container ${options.container}. Pass --conversations-root <absolute-path> for a non-default layout. No conversation was deleted.`);
+  }
 
   let entries;
   try {
-    entries = await runInContainer(docker, options.container, SCAN_SCRIPT);
+    entries = await runInContainer(docker, options.container, scanScript(conversationsRoot));
   } catch (error) {
-    fail(`could not read ${CONVERSATIONS_ROOT} in container ${options.container} via ${docker} (${error.code ?? "error"}). Check Docker, the container name, and container access.`);
+    fail(`could not read ${conversationsRoot} in container ${options.container} via ${docker} (${error.code ?? "error"}). Check Docker, the container name, and container access.`);
   }
   if (!Array.isArray(entries)) fail(`unexpected scan output from container ${options.container}.`);
 
@@ -255,7 +308,7 @@ async function main() {
     if (options.json) process.stdout.write(`${JSON.stringify(summary)}\n`);
     else {
       process.stdout.write([
-        `Container: ${summary.container} (${CONVERSATIONS_ROOT})`,
+        `Container: ${summary.container} (${summary.conversationsRoot})`,
         `Conversations: ${summary.total} total, ${summary.empty} empty (${summary.archivedEmpty} archived), ${summary.withMessages} with messages`,
         `Selected for deletion: ${summary.selected}`,
         "Dry run: nothing was deleted. Re-run with --apply --backup-dir <dir> to delete.",
@@ -268,15 +321,15 @@ async function main() {
   // Backup before any removal, from the same validated directory set.
   let backupPath = null;
   try {
-    const payload = await runInContainer(docker, options.container, READBACK_SCRIPT, selectedNames);
-    backupPath = await writeBackup(options.backupDir, options.container, payload);
+    const payload = await runInContainer(docker, options.container, readbackScript(conversationsRoot), selectedNames);
+    backupPath = await writeBackup(options.backupDir, options.container, conversationsRoot, payload);
   } catch (error) {
-    fail(`backup failed for ${CONVERSATIONS_ROOT} in container ${options.container} (${error.code ?? "error"}); no conversation was deleted.`);
+    fail(`backup failed for ${conversationsRoot} in container ${options.container} (${error.code ?? "error"}); no conversation was deleted.`);
   }
 
   let results;
   try {
-    results = await runInContainer(docker, options.container, DELETE_SCRIPT, selectedNames);
+    results = await runInContainer(docker, options.container, deleteScript(conversationsRoot), selectedNames);
   } catch (error) {
     fail(`deletion command failed in container ${options.container} (${error.code ?? "error"}); backups are at ${backupPath}.`);
   }
@@ -293,7 +346,7 @@ async function main() {
   if (options.json) process.stdout.write(`${JSON.stringify(output)}\n`);
   else {
     process.stdout.write([
-      `Container: ${summary.container} (${CONVERSATIONS_ROOT})`,
+      `Container: ${summary.container} (${summary.conversationsRoot})`,
       `Conversations: ${summary.total} total, ${summary.empty} empty (${summary.archivedEmpty} archived), ${summary.withMessages} with messages`,
       `Selected: ${summary.selected}`,
       `Backup: ${backupPath}`,
@@ -318,4 +371,4 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   });
 }
 
-export { parseArguments, summarise, main };
+export { parseArguments, summarise, main, validateConversationsRoot };
