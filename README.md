@@ -20,7 +20,7 @@ Installing runs trusted third-party code. Review the source and security notes f
 - BB **>=0.46** and Plugin SDK **>=0.6.49**; development dependency is pinned to SDK **0.6.49**. These are manifest constraints, not a claim that every newer version has been tested.
 - The enabled ACP adapter plugin **`provider-acp`**, including its `customAgents` setting. Generated providers must be available before a chat can start.
 - Docker available to the plugin backend, permission to access its daemon, and a running local container with **Node** and the expected letta-code files. The plugin does not provision Docker, Letta, an app-server, a project, a host, or a workspace provider.
-- Node/npm and `npx` on the **ACP execution host**. The adapter launches `npx -y @letta-ai/letta-acp@0.1.10`; initial resolution may require registry access.
+- Node/npm and `npx` on the **ACP execution host**. The adapter launches whatever `acpCommand`/`acpArgs` are configured, defaulting to `npx` with `["-y","@letta-ai/letta-acp@0.1.10"]`; initial resolution may require registry access.
 - A running Letta app-server reachable from that ACP host, with a matching token.
 
 Configure the following in Letta Agents settings before starting a new chat. Use IDs from your own BB installation; none are portable hard-coded defaults.
@@ -151,7 +151,7 @@ node --test scripts/purge-empty-conversations.test.mjs
 
 This implementation is tied to the local Docker layout, the adapter's custom-agent settings, experimental BB sidebar APIs, and current picker markup. It is not a general Letta Cloud connector. It does not automatically remove retired providers or migrate existing thread permissions.
 
-Release checks passed 66 automated tests, TypeScript checking, and the BB plugin build. Basic saved-chat navigation was checked in the running app; the maintainer confirmed the remaining live workflow and visual checks. These are local results, not a compatibility guarantee for other installations. The adapter remains pinned to 0.1.10; other versions are unverified.
+Release checks passed the automated test suite, TypeScript checking, and the BB plugin build. Basic saved-chat navigation was checked in the running app; the maintainer confirmed the remaining live workflow and visual checks. These are local results, not a compatibility guarantee for other installations. The adapter remains pinned to 0.1.10; other versions are unverified.
 
 ## Development and reporting issues
 
