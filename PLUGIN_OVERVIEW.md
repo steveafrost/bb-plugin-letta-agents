@@ -16,7 +16,7 @@ The plugin backend needs local Docker access and a running letta-code container 
 
 The ACP execution host needs Node/npm with `npx` and access to the Letta app-server. `appServerUrl` defaults to `ws://127.0.0.1:4500`, interpreted from that host. Roster reads still require local Docker even if the endpoint is remote.
 
-Generated entries run **`npx -y @letta-ai/letta-acp@0.1.10`**, pinned because **0.1.11 has a known stream hang**. Modern versions have not been established as tested; the pin is not a claim that every newer version fails.
+Generated entries run the configured **`acpCommand`** with **`acpArgs`** (defaults `npx` and `["-y","@letta-ai/letta-acp@0.1.10"]`, and `modelCatalogListArgs` drives model listing), pinned to **0.1.10** because **0.1.11 has a known stream hang**. Modern versions have not been established as tested; the pin is not a claim that every newer version fails.
 
 ## Sidebar status dots
 
