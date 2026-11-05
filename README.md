@@ -145,6 +145,8 @@ The fixture tests use a fake `docker` executable and a temporary directory; they
 node --test scripts/purge-empty-conversations.test.mjs
 ```
 
+**Resuming a chat whose conversation was purged.** A purge removes conversations that a saved chat may still point at, and a first turn that fails before persisting a message can leave a chat in the same state. The ACP entry point behind `acpCommand` recovers inside the load request: when the adapter answers `session/load` with `Conversation <id> not found` or `Unknown session: <id>`, the entry point asks for a fresh session with the same `cwd` and `mcpServers`, answers the load as if it resumed, and keeps the client's saved id working for the rest of the process. The id-to-conversation mapping is written to `~/.letta/acp-session-aliases.json` (mode `0600`, override with `LETTA_ACP_ALIAS_FILE`), so later launches load the recovered conversation instead of starting another one. Any other `session/load` failure, including invalid params, is forwarded unchanged, and the fallback runs at most once per load request. The chat continues in a new conversation with its earlier messages absent; only the saved pointer survives.
+
 **Warning: deleted conversations cannot be recovered from Letta.** The backup holds only conversation metadata, not the conversations themselves, and there is no undelete: Letta has no supported delete, so it has no supported restore either. Review the dry-run count and the selected scope before passing `--apply`.
 
 ## Current limits and verification status
