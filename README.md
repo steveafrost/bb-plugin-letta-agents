@@ -39,6 +39,8 @@ Configure the following in Letta Agents settings before starting a new chat. Use
 | `allowUnrestricted` | `false` | Explicit opt-in to unrestricted Letta tools and full BB permissions. |
 | `showAgentsInProviderPicker` | `false` | UI-only picker visibility; providers stay enabled. |
 
+**The launch command must exist on every host.** Generated ACP entries are global, so BB refreshes their model catalog on each connected host, not only the one that runs the chats. An absolute `acpCommand` or wrapper path that exists on one machine produces `missing_executable: spawn <path> ENOENT` on the others every prewarm. That is harmless when the provider is only selected in threads on the host that has it, but it buries real provider errors; use a command name on `PATH` and a wrapper only at a path present on every host that will probe it.
+
 The container layout is currently fixed, not configurable:
 
 - `/root/.letta/lc-local-backend/agents/*.json`: roster records, read by Node inside the container. Records contain an immutable `id`, a nonempty `name`, optional nullable `description`, and optional integer `avatarVersion` (default 1). At most 500 agents are accepted.
