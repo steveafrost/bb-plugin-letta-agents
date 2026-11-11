@@ -262,6 +262,12 @@ function WorkingSpinner() {
   );
 }
 
+// Avatar size for a roster row. One knob: raise both the box and the initials
+// text together so a fallback badge matches an image avatar.
+const AGENT_AVATAR_CLASS = "size-8 shrink-0 rounded-full";
+const AGENT_AVATAR_INITIALS_CLASS =
+  "flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-sm font-semibold text-primary";
+
 function AgentRow({
   agent,
   avatar,
@@ -292,7 +298,7 @@ function AgentRow({
       onClick={onOpen}
       aria-busy={starting}
       aria-disabled={starting}
-      className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+      className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
       title={title}
     >
       {avatar ? (
@@ -300,12 +306,13 @@ function AgentRow({
           src={avatar}
           alt=""
           className={cn(
-            "size-5 shrink-0 rounded-full object-cover",
+            AGENT_AVATAR_CLASS,
+            "object-cover",
             !working && "opacity-80",
           )}
         />
       ) : (
-        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-semibold text-primary">
+        <span className={AGENT_AVATAR_INITIALS_CLASS}>
           {initials(agent.name)}
         </span>
       )}
