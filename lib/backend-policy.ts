@@ -56,6 +56,24 @@ export function validAcpCommand(value: string): string {
   if (!text || /[\u0000-\u001f\u007f]/.test(text)) throw new Error("Invalid ACP setting: the ACP agent command must be an executable name or path without control characters.");
   return text;
 }
+/**
+ * Drop agents Letta has marked hidden.
+ *
+ * Reflection runs as a Letta subagent, and every pass leaves a real agent
+ * behind carrying `hidden: true` (derived from the `role:subagent` tag -- see
+ * normalizeAgentHiddenFlag in letta-code). Letta's own UI hides those. The
+ * roster read here is a raw directory listing, so without this filter every
+ * reflection pass adds a permanent stranger to the sidebar, named whatever the
+ * subagent chose, and indistinguishable from an agent a human created.
+ *
+ * Only a literal `hidden: true` is dropped. A record with the field missing or
+ * null stays visible, so an older agent, or a Letta version that stops writing
+ * the flag, keeps showing up rather than vanishing from the picker.
+ */
+export function visibleAgents<T extends { hidden?: unknown }>(agents: T[]): T[] {
+  return agents.filter((agent) => agent.hidden !== true);
+}
+
 /** Preserve established providers by immutable backend ID, never by display name alone. */
 export function identities(agents: AgentRecord[], current: CustomAgent[], saved: Record<string, string>, endpoint?: string): Record<string, string> {
   const result: Record<string, string> = Object.create(null);

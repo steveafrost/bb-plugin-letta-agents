@@ -3,9 +3,12 @@ import { delimiter, dirname } from "node:path";
 import { promisify } from "node:util";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { identities, mergeProviders, parseStringArray, singleFlight, slug, THREAD_ID_PATTERN, validAcpCommand, validAgentId, validContainer, validEndpoint, validThreadId, type AgentRecord, type CustomAgent } from "./lib/backend-policy.ts";
+import { identities, mergeProviders, parseStringArray, singleFlight, slug, THREAD_ID_PATTERN, validAcpCommand, validAgentId, validContainer, validEndpoint, validThreadId, visibleAgents, type AgentRecord, type CustomAgent } from "./lib/backend-policy.ts";
 const execute = promisify(execFile);
-const agentSchema = z.object({ id: z.string(), name: z.string().min(1), description: z.string().nullable().default(null), avatarVersion: z.number().int().default(1) });
+// `hidden` must be declared, not merely tolerated: z.object strips unknown keys,
+// so filtering after this parse would see undefined on every agent and hide
+// nothing. It is optional so a record without the field stays visible.
+const agentSchema = z.object({ id: z.string(), name: z.string().min(1), description: z.string().nullable().default(null), avatarVersion: z.number().int().default(1), hidden: z.boolean().optional() });
 const rosterSchema = z.object({ agents: z.array(agentSchema).max(500), fetchedAt: z.number() });
 type Roster = z.infer<typeof rosterSchema>;
 const customSchema = z.array(z.object({ id: z.string(), env: z.record(z.string(), z.string()).optional() }).passthrough());
@@ -71,7 +74,9 @@ export default async function plugin(bb: BbPluginApi) {
     try {
       const config = await settings.get();
       validEndpoint(config.appServerUrl);
-      const agents = rosterSchema.shape.agents.parse(JSON.parse((await docker(["node", "-e", ROSTER_SCRIPT])).toString("utf8")));
+      const allAgents = rosterSchema.shape.agents.parse(JSON.parse((await docker(["node", "-e", ROSTER_SCRIPT])).toString("utf8")));
+      // Reflection subagents are hidden agents, not stray ones; see visibleAgents.
+      const agents = visibleAgents(allAgents);
       const roster: Roster = { agents, fetchedAt: Date.now() };
       const token = (await docker(["cat", "/root/.letta/app-server.token"])).toString("utf8").trim();
       if (!token || /[\r\n\0]/.test(token)) throw new Error("Letta token is empty or malformed.");

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { identities, mergeProviders, parseStringArray, singleFlight, stableId, validAcpCommand, validAgentId, validContainer, validEndpoint } from "./backend-policy.ts";
+import { identities, mergeProviders, parseStringArray, singleFlight, stableId, validAcpCommand, validAgentId, validContainer, validEndpoint, visibleAgents } from "./backend-policy.ts";
 const agent = (id: string, name = "same") => ({ id, name, description: null, avatarVersion: 1 });
 const legacy = { id: "letta-old", env: { LETTA_AGENT_ID: "agent-1", LETTA_ACP_BACKEND: "remote" } };
 test("container and agent command arguments reject shell syntax and options", () => {
@@ -31,6 +31,28 @@ test("duplicate aliases and foreign endpoints block provider adoption", () => {
   assert.throws(() => identities([agent("agent-1")], [owned, { ...owned, id: "letta-duplicate" }], {}, endpoint), /Duplicate Letta providers/);
   assert.throws(() => identities([agent("agent-1")], [owned], {}, "ws://other.test:4500"), /Provider endpoint differs/);
 });
+test("hidden agents are dropped from the roster and nothing else is", () => {
+  // A reflection pass leaves a real Letta agent behind with hidden:true. Showing
+  // it puts a stranger in the sidebar after every pass.
+  const agents = [
+    { id: "jeeves", name: "jeeves" },
+    { id: "neo", name: "Neo", hidden: true },
+    { id: "smasher", name: "Smasher", hidden: true },
+    { id: "explicit-visible", name: "Visible", hidden: false },
+    // An older agent, or a Letta version that stops writing the flag, must stay
+    // visible rather than silently disappearing from the picker.
+    { id: "no-flag", name: "Legacy" },
+    { id: "null-flag", name: "Null", hidden: null },
+  ];
+  assert.deepEqual(visibleAgents(agents).map(a => a.id), ["jeeves", "explicit-visible", "no-flag", "null-flag"]);
+  // Order of survivors is preserved, because the picker renders it.
+  assert.deepEqual(visibleAgents([{ id: "a" }, { id: "b", hidden: true }, { id: "c" }]).map(a => a.id), ["a", "c"]);
+  assert.deepEqual(visibleAgents([]), []);
+  // Only a literal true hides: a truthy string must not, since a record with an
+  // unexpected value should stay visible rather than vanish.
+  assert.deepEqual(visibleAgents([{ id: "x", hidden: "true" }]).map(a => a.id), ["x"]);
+});
+
 test("merge preserves unrelated and missing agents including order and opaque fields", () => {
   const other = { id: "omp", displayName: "OMP", command: "omp", extra: { preserve: true } };
   const absent = { id: "letta-absent", env: { LETTA_AGENT_ID: "agent-absent" } };
